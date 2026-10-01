@@ -26,8 +26,8 @@ import (
 var webFiles embed.FS
 
 type Config struct {
-	Addr, DataDir, TileURL, ForecastURL, SearchURL, ObservationsURL string
-	Debug                                                           bool
+	Addr, DataDir, TileURL, ForecastURL, SearchURL, ObservationsURL, MetarURL string
+	Debug                                                                     bool
 }
 
 func env(key, fallback string) string {
@@ -41,13 +41,14 @@ func configuration() Config {
 	if port := os.Getenv("PORT"); port != "" {
 		addr = net.JoinHostPort("0.0.0.0", port)
 	}
-	return Config{Addr: env("ADDR", addr), Debug: os.Getenv("DEBUG") == "1", DataDir: env("DATA_DIR", "data"), TileURL: env("TILE_URL", "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt"), ForecastURL: env("FORECAST_URL", "https://api.open-meteo.com/v1/dwd-icon"), SearchURL: env("SEARCH_URL", "https://geocoding-api.open-meteo.com/v1/search"), ObservationsURL: env("OBSERVATIONS_URL", "https://opendata.dwd.de/weather/weather_reports/synoptic/germany/geojson/")}
+	return Config{Addr: env("ADDR", addr), Debug: os.Getenv("DEBUG") == "1", DataDir: env("DATA_DIR", "data"), TileURL: env("TILE_URL", "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt"), ForecastURL: env("FORECAST_URL", "https://api.open-meteo.com/v1/dwd-icon"), SearchURL: env("SEARCH_URL", "https://geocoding-api.open-meteo.com/v1/search"), ObservationsURL: env("OBSERVATIONS_URL", "https://opendata.dwd.de/weather/weather_reports/synoptic/germany/geojson/"), MetarURL: env("METAR_URL", "https://aviationweather.gov/api/data/metar")}
 }
 
 type Server struct {
 	config      Config
 	cache       *Cache
 	geography   *Geography
+	geographies map[string]*Geography
 	provider    *Provider
 	logger      *slog.Logger
 	seenReports map[string]bool
@@ -59,6 +60,10 @@ func newServer(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	g, err := newGeography()
+	if err != nil {
+		return nil, err
+	}
+	turkey, err := geographyFor(countries[1])
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +87,22 @@ func newServer(cfg Config) (*Server, error) {
 			logger.Warn("request budget snapshot failed", "error", err)
 		}
 	}
-	return &Server{config: cfg, cache: cache, geography: g, provider: &Provider{client: &http.Client{Timeout: 25 * time.Second}, forecastURL: cfg.ForecastURL, searchURL: cfg.SearchURL, budget: budget}, logger: logger, seenReports: map[string]bool{}}, nil
+	return &Server{config: cfg, cache: cache, geography: g, geographies: map[string]*Geography{"DE": g, "TR": turkey}, provider: &Provider{client: &http.Client{Timeout: 25 * time.Second}, forecastURL: cfg.ForecastURL, searchURL: cfg.SearchURL, budget: budget}, logger: logger, seenReports: map[string]bool{}}, nil
+}
+
+// Preserve Germany's existing disk cache keys across the country expansion.
+func countryCacheKey(country Country, kind string) string {
+	if country.Code == "DE" {
+		return kind
+	}
+	return kind + ":" + country.Code
+}
+func requestCountry(c *echo.Context) (Country, bool) {
+	code := strings.ToUpper(strings.TrimSpace(c.QueryParam("country")))
+	if code == "" {
+		code = "DE"
+	}
+	return countryByCode(code)
 }
 
 type Feature struct {
@@ -97,15 +117,16 @@ type Overview struct {
 	Spacing  float64   `json:"spacingDegrees"`
 }
 
-func (s *Server) refreshOverview(ctx context.Context) error {
+func (s *Server) refreshOverview(ctx context.Context, country Country) error {
+	geography := s.geographies[country.Code]
 	all := []Forecast{}
-	for start := 0; start < len(s.geography.cells); start += 40 {
-		end := min(start+40, len(s.geography.cells))
+	for start := 0; start < len(geography.cells); start += 40 {
+		end := min(start+40, len(geography.cells))
 		coords := []Coordinate{}
-		for _, c := range s.geography.cells[start:end] {
+		for _, c := range geography.cells[start:end] {
 			coords = append(coords, c.Coordinate)
 		}
-		forecasts, err := s.provider.forecasts(ctx, coords, false)
+		forecasts, err := s.provider.forecasts(ctx, coords, country, false)
 		if err != nil {
 			return err
 		}
@@ -114,7 +135,7 @@ func (s *Server) refreshOverview(ctx context.Context) error {
 	if len(all) == 0 {
 		return errors.New("no overview grid cells")
 	}
-	result := Overview{Type: "FeatureCollection", Times: []int64{}, Features: []Feature{}, Spacing: .3}
+	result := Overview{Type: "FeatureCollection", Times: []int64{}, Features: []Feature{}, Spacing: country.Spacing}
 	for _, h := range all[0].Hours {
 		result.Times = append(result.Times, h.Time)
 	}
@@ -131,24 +152,46 @@ func (s *Server) refreshOverview(ctx context.Context) error {
 			}
 			states = append(states, state)
 		}
-		result.Features = append(result.Features, Feature{Type: "Feature", Geometry: s.geography.cells[i].Geometry, Properties: struct {
+		result.Features = append(result.Features, Feature{Type: "Feature", Geometry: geography.cells[i].Geometry, Properties: struct {
 			ID     int      `json:"id"`
 			States []string `json:"states"`
 		}{i, states}})
 	}
-	return s.cache.put("overview", result)
+	return s.cache.put(countryCacheKey(country, "overview"), result)
 }
 func (s *Server) workers(ctx context.Context) {
+	for _, country := range countries {
+		go func() {
+			for {
+				entry, ok := s.cache.lookup(countryCacheKey(country, "overview"))
+				if !ok || time.Since(time.Unix(entry.FetchedAt, 0)) >= 3*time.Hour {
+					if err := s.refreshOverview(ctx, country); err != nil && ctx.Err() == nil {
+						s.logger.Warn("forecast overview refresh failed", "country", country.Code, "error", err)
+					}
+				}
+				delay := 5 * time.Minute
+				if entry, ok := s.cache.lookup(countryCacheKey(country, "overview")); ok {
+					remaining := 3*time.Hour - time.Since(time.Unix(entry.FetchedAt, 0))
+					if remaining > 0 {
+						delay = remaining
+					}
+				}
+				t := time.NewTimer(delay)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+					return
+				case <-t.C:
+				}
+			}
+		}()
+	}
 	go func() {
 		for {
-			if err := s.refreshOverview(ctx); err != nil && ctx.Err() == nil {
-				s.logger.Warn("forecast overview refresh failed", "error", err)
+			if err := s.refreshObservations(ctx); err != nil && ctx.Err() == nil {
+				s.logger.Warn("station refresh failed", "error", err)
 			}
-			delay := 3 * time.Hour
-			if _, ok := s.cache.lookup("overview"); !ok {
-				delay = 5 * time.Minute
-			}
-			t := time.NewTimer(delay)
+			t := time.NewTimer(10 * time.Minute)
 			select {
 			case <-ctx.Done():
 				t.Stop()
@@ -159,8 +202,8 @@ func (s *Server) workers(ctx context.Context) {
 	}()
 	go func() {
 		for {
-			if err := s.refreshObservations(ctx); err != nil && ctx.Err() == nil {
-				s.logger.Warn("station refresh failed", "error", err)
+			if err := s.refreshTurkeyObservations(ctx); err != nil && ctx.Err() == nil {
+				s.logger.Warn("Turkey airport observations refresh failed", "error", err)
 			}
 			t := time.NewTimer(10 * time.Minute)
 			select {
@@ -195,22 +238,34 @@ func (s *Server) routes() *echo.Echo {
 		}
 	})
 	e.GET("/api/config", func(c *echo.Context) error {
-		return c.JSON(200, map[string]any{"tileURL": s.config.TileURL, "timezone": "Europe/Berlin", "boundary": json.RawMessage(germanyJSON), "debug": s.config.Debug})
+		return c.JSON(200, map[string]any{"tileURL": s.config.TileURL, "timezone": "Europe/Berlin", "boundary": json.RawMessage(germanyJSON), "countries": countries, "debug": s.config.Debug})
 	})
 	e.GET("/api/health", func(c *echo.Context) error {
-		_, overview := s.cache.lookup("overview")
-		_, obs := s.cache.lookup("observations")
-		return c.JSON(200, map[string]any{"status": "ok", "overviewReady": overview, "observationsReady": obs, "gridCells": len(s.geography.cells)})
+		country, ok := requestCountry(c)
+		if !ok {
+			return c.JSON(400, map[string]string{"error": "Choose Germany (DE) or Turkey (TR)."})
+		}
+		_, overview := s.cache.lookup(countryCacheKey(country, "overview"))
+		_, obs := s.cache.lookup(countryCacheKey(country, "observations"))
+		return c.JSON(200, map[string]any{"status": "ok", "country": country.Code, "overviewReady": overview, "observationsReady": obs, "gridCells": len(s.geographies[country.Code].cells)})
 	})
 	e.GET("/api/overview", func(c *echo.Context) error {
-		entry, ok := s.cache.lookup("overview")
+		country, ok := requestCountry(c)
 		if !ok {
-			return unavailable(c, "The Germany forecast is warming up. Try again shortly; you can already select a spot.")
+			return c.JSON(400, map[string]string{"error": "Choose Germany (DE) or Turkey (TR)."})
 		}
-		return c.JSON(200, Envelope{Entry: entry, Source: "DWD ICON D2 via Open-Meteo · 0.3° sampled overview", Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 3*time.Hour, Units: units})
+		entry, ok := s.cache.lookup(countryCacheKey(country, "overview"))
+		if !ok {
+			return unavailable(c, "The "+country.Name+" forecast is warming up. Try again shortly; you can already select a spot.")
+		}
+		return c.JSON(200, Envelope{Entry: entry, Source: fmt.Sprintf("%s via Open-Meteo · %.1f° sampled overview", country.ModelName, country.Spacing), Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 3*time.Hour, Units: units})
 	})
 	e.GET("/api/observations", func(c *echo.Context) error {
-		entry, ok := s.cache.lookup("observations")
+		country, ok := requestCountry(c)
+		if !ok {
+			return c.JSON(400, map[string]string{"error": "Choose Germany (DE) or Turkey (TR)."})
+		}
+		entry, ok := s.cache.lookup(countryCacheKey(country, "observations"))
 		if !ok {
 			return unavailable(c, "Station observations are not available yet.")
 		}
@@ -221,7 +276,7 @@ func (s *Server) routes() *echo.Echo {
 		fresh := freshObservations(all, time.Now())
 		filtered := []Observation{}
 		for _, o := range fresh {
-			if s.geography.contains(o.Latitude, o.Longitude) {
+			if s.geographies[country.Code].contains(o.Latitude, o.Longitude) {
 				filtered = append(filtered, o)
 			}
 		}
@@ -230,19 +285,23 @@ func (s *Server) routes() *echo.Echo {
 			return err
 		}
 		entry.Data = b
-		return c.JSON(200, Envelope{Entry: entry, Source: "DWD station observations", Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 20*time.Minute, Units: units})
+		return c.JSON(200, Envelope{Entry: entry, Source: country.ObservationSource, Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 20*time.Minute, Units: units})
 	})
 	e.GET("/api/forecast", func(c *echo.Context) error {
+		country, ok := requestCountry(c)
+		if !ok {
+			return c.JSON(400, map[string]string{"error": "Choose Germany (DE) or Turkey (TR)."})
+		}
 		lat, errLat := strconv.ParseFloat(c.QueryParam("lat"), 64)
 		lon, errLon := strconv.ParseFloat(c.QueryParam("lon"), 64)
-		if errLat != nil || errLon != nil || !s.geography.contains(lat, lon) {
-			return c.JSON(400, map[string]string{"error": "Select a location within Germany."})
+		if errLat != nil || errLon != nil || !s.geographies[country.Code].contains(lat, lon) {
+			return c.JSON(400, map[string]string{"error": "Select a location within " + country.Name + "."})
 		}
-		key := fmt.Sprintf("point:%.4f,%.4f", lat, lon)
+		key := fmt.Sprintf("%s:%.4f,%.4f", countryCacheKey(country, "point"), lat, lon)
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 35*time.Second)
 		defer cancel()
 		entry, stale, err := s.cache.load(ctx, key, time.Hour, func(ctx context.Context) (any, error) {
-			f, err := s.provider.forecasts(ctx, []Coordinate{{lat, lon}}, true)
+			f, err := s.provider.forecasts(ctx, []Coordinate{{lat, lon}}, country, true)
 			if err != nil {
 				return nil, err
 			}
@@ -256,16 +315,20 @@ func (s *Server) routes() *echo.Echo {
 		if err != nil {
 			warning = "Provider unavailable; showing the last saved forecast."
 		}
-		return c.JSON(200, Envelope{Entry: entry, Source: "DWD ICON D2 via Open-Meteo · model forecast", Stale: stale, Warning: warning, Units: units})
+		return c.JSON(200, Envelope{Entry: entry, Source: country.ModelName + " via Open-Meteo · model forecast", Stale: stale, Warning: warning, Units: units})
 	})
 	e.GET("/api/search", func(c *echo.Context) error {
+		country, ok := requestCountry(c)
+		if !ok {
+			return c.JSON(400, map[string]string{"error": "Choose Germany (DE) or Turkey (TR)."})
+		}
 		query := strings.TrimSpace(c.QueryParam("q"))
 		if len([]rune(query)) < 2 || len(query) > 120 {
 			return c.JSON(400, map[string]string{"error": "Enter between 2 and 120 characters."})
 		}
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
 		defer cancel()
-		entry, stale, err := s.cache.load(ctx, "search:"+strings.ToLower(query), 24*time.Hour, func(ctx context.Context) (any, error) { return s.provider.search(ctx, query) })
+		entry, stale, err := s.cache.load(ctx, countryCacheKey(country, "search")+":"+strings.ToLower(query), 24*time.Hour, func(ctx context.Context) (any, error) { return s.provider.search(ctx, query, country) })
 		if err != nil && !stale {
 			return unavailable(c, "Place search unavailable. Select a spot on the map instead.")
 		}

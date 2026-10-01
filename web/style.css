@@ -5,6 +5,10 @@
 @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition:none!important}}
 
 /* Keep enlarged labels and navigation controls comfortable on touch screens. */
+.country-picker{display:flex;align-items:center;gap:16px;margin:0 0 14px}
+.country-picker select{flex:1;min-width:0;border:1px solid #3a493f;border-radius:6px;background:#121b16;color:var(--ink);padding:9px 12px;font:inherit}
+.saved-country{margin-left:auto;color:var(--muted);font-size:12px;align-self:center}
+@media(max-width:700px){.sidebar:not(.expanded){height:224px}.map-area{bottom:224px}.country-picker{margin-bottom:10px}.country-picker select{padding:6px 10px}.sidebar:not(.expanded) .spot-title{display:none}.toast{bottom:240px}}
 .maplibregl-ctrl-group button{width:40px;height:40px}
 .maplibregl-ctrl-attrib{line-height:1.6;padding:3px 8px}
 .legend{bottom:210px}

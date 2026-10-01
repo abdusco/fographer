@@ -144,7 +144,7 @@ func TestRoutes(t *testing.T) {
 		{"search failure", "/api/search?q=Berlin", 503, "search unavailable"},
 		{"unknown API", "/api/no-such-route", 404, "Unknown API"},
 		{"home", "/", 200, "Follow the fog."},
-		{"service worker", "/sw.js", 200, "fographer-v3"},
+		{"service worker", "/sw.js", 200, "fographer-v4"},
 		{"map library", "/vendor/maplibre-gl.js", 200, "maplibregl"},
 		{"PWA icon", "/assets/icon-192.png", 200, "PNG"},
 	}

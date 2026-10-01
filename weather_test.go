@@ -107,7 +107,7 @@ func TestProviderForecast(t *testing.T) {
 			}))
 			defer upstream.Close()
 			p := Provider{client: upstream.Client(), forecastURL: upstream.URL, budget: &Budget{}}
-			f, err := p.forecasts(context.Background(), tt.coords, true)
+			f, err := p.forecasts(context.Background(), tt.coords, countries[0], true)
 			if tt.wantError {
 				require.Error(t, err)
 			} else {
@@ -121,7 +121,7 @@ func TestProviderTimeout(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer upstream.Close()
 	p := Provider{client: &http.Client{Timeout: 20 * time.Millisecond}, forecastURL: upstream.URL, budget: &Budget{}}
-	_, err := p.forecasts(context.Background(), []Coordinate{{52.52, 13.41}}, false)
+	_, err := p.forecasts(context.Background(), []Coordinate{{52.52, 13.41}}, countries[0], false)
 	require.Error(t, err)
 }
 func TestBudget(t *testing.T) {

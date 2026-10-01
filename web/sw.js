@@ -1,8 +1,8 @@
-const VERSION = 'fographer-v3';
+const VERSION = 'fographer-v4';
 const SHELL = VERSION + '-shell';
 const WEATHER = VERSION + '-weather';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/icon.svg', '/manifest.webmanifest', '/assets/icon-192.png', '/assets/icon-512.png', '/vendor/alpine.js', '/vendor/maplibre-gl.js', '/vendor/maplibre-gl.css', ...['0-255', '256-511', '512-767', '768-1023'].map(r => '/fonts/Open%20Sans%20Semibold/' + r + '.pbf')];
-self.addEventListener('install', event => { event.waitUntil(caches.open(SHELL).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting())); });
+self.addEventListener('install', event => { event.waitUntil(Promise.all([caches.open(SHELL).then(cache => cache.addAll(ASSETS)), caches.open(WEATHER).then(cache => cache.add('/api/config'))]).then(() => self.skipWaiting())); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('fographer-') && ![SHELL, WEATHER].includes(k)).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 async function weather(request) {
   const cache = await caches.open(WEATHER);

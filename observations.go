@@ -16,17 +16,18 @@ import (
 )
 
 type Observation struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Latitude       float64  `json:"latitude"`
-	Longitude      float64  `json:"longitude"`
-	Time           int64    `json:"time"`
-	Visibility     *float64 `json:"visibility"`
-	VisibilityTime int64    `json:"visibilityTime"`
-	Weather        string   `json:"weather"`
-	WeatherTime    int64    `json:"weatherTime"`
-	Fog            bool     `json:"fog"`
-	Stale          bool     `json:"stale"`
+	ID                  string   `json:"id"`
+	Name                string   `json:"name"`
+	Latitude            float64  `json:"latitude"`
+	Longitude           float64  `json:"longitude"`
+	Time                int64    `json:"time"`
+	Visibility          *float64 `json:"visibility"`
+	VisibilityQualifier string   `json:"visibilityQualifier,omitempty"`
+	VisibilityTime      int64    `json:"visibilityTime"`
+	Weather             string   `json:"weather"`
+	WeatherTime         int64    `json:"weatherTime"`
+	Fog                 bool     `json:"fog"`
+	Stale               bool     `json:"stale"`
 }
 type reportField struct {
 	Short string `json:"shortname"`
@@ -121,6 +122,7 @@ func mergeObservations(previous, incoming []Observation) []Observation {
 		}
 		if o.Visibility != nil && o.VisibilityTime >= old.VisibilityTime {
 			old.Visibility = o.Visibility
+			old.VisibilityQualifier = o.VisibilityQualifier
 			old.VisibilityTime = o.VisibilityTime
 		}
 		if o.Weather != "" && o.WeatherTime >= old.WeatherTime {

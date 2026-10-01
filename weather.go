@@ -177,7 +177,7 @@ type Coordinate struct {
 	Lon float64
 }
 
-func (p *Provider) forecasts(ctx context.Context, coords []Coordinate, sun bool) ([]Forecast, error) {
+func (p *Provider) forecasts(ctx context.Context, coords []Coordinate, country Country, sun bool) ([]Forecast, error) {
 	if len(coords) == 0 {
 		return nil, errors.New("no forecast locations")
 	}
@@ -189,7 +189,7 @@ func (p *Provider) forecasts(ctx context.Context, coords []Coordinate, sun bool)
 		lats = append(lats, strconv.FormatFloat(c.Lat, 'f', 4, 64))
 		lons = append(lons, strconv.FormatFloat(c.Lon, 'f', 4, 64))
 	}
-	q := url.Values{"latitude": {strings.Join(lats, ",")}, "longitude": {strings.Join(lons, ",")}, "hourly": {"temperature_2m,relative_humidity_2m,dew_point_2m,visibility,wind_speed_10m,precipitation,weather_code,cloud_cover_low"}, "models": {"icon_d2"}, "forecast_hours": {"48"}, "timezone": {"Europe/Berlin"}, "timeformat": {"unixtime"}}
+	q := url.Values{"latitude": {strings.Join(lats, ",")}, "longitude": {strings.Join(lons, ",")}, "hourly": {"temperature_2m,relative_humidity_2m,dew_point_2m,visibility,wind_speed_10m,precipitation,weather_code,cloud_cover_low"}, "models": {country.Model}, "forecast_hours": {"48"}, "timezone": {country.Timezone}, "timeformat": {"unixtime"}}
 	if sun {
 		q.Set("daily", "sunrise,sunset")
 		q.Set("forecast_days", "3")
@@ -231,11 +231,11 @@ type Place struct {
 	Longitude float64 `json:"longitude"`
 }
 
-func (p *Provider) search(ctx context.Context, query string) ([]Place, error) {
+func (p *Provider) search(ctx context.Context, query string, country Country) ([]Place, error) {
 	if err := p.budget.wait(ctx, 1); err != nil {
 		return nil, err
 	}
-	q := url.Values{"name": {query}, "count": {"8"}, "language": {"en"}, "format": {"json"}, "countryCode": {"DE"}}
+	q := url.Values{"name": {query}, "count": {"8"}, "language": {"en"}, "format": {"json"}, "countryCode": {country.Code}}
 	var r struct {
 		Results []struct {
 			Name      string  `json:"name"`
@@ -250,7 +250,7 @@ func (p *Provider) search(ctx context.Context, query string) ([]Place, error) {
 	}
 	places := []Place{}
 	for _, v := range r.Results {
-		if v.Country == "DE" {
+		if v.Country == country.Code {
 			places = append(places, Place{v.Name, v.Region, v.Latitude, v.Longitude})
 		}
 	}

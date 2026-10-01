@@ -1,9 +1,8 @@
 /* MapLibre is deliberately kept outside Alpine's reactive object. */
 (() => {
-  let map, selectedMarker, requestID = 0, searchID = 0, pointAbort, searchAbort, pollTimer;
+  let map, selectedMarker, requestID = 0, selectionID = 0, searchID = 0, refreshID = 0, pointAbort, searchAbort, pollTimer;
   const emptyCollection = () => ({type: 'FeatureCollection', features: []});
   const readStorage = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
-  const berlin = {timeZone: 'Europe/Berlin'};
   const floorHour = () => Math.floor(Date.now() / 3600000) * 3600;
   document.addEventListener('alpine:init', () => {
     Alpine.data('fographer', () => ({
@@ -13,14 +12,19 @@
       overview: null, observations: null, overviewMessage: 'Finding the next quiet morning…', mapError: '',
       mode: 'now', timeIndex: 0, times: [], showModel: true, showStations: true,
       favorites: [],
+      country: ['DE', 'TR'].includes(readStorage('fographer.country', 'DE')) ? readStorage('fographer.country', 'DE') : 'DE',
+      countries: [],
       async init() {
         const stored = readStorage('fographer.spots', []);
-        this.favorites = Array.isArray(stored) ? stored.filter(s => s && typeof s.name === 'string' && Number.isFinite(s.lat) && Number.isFinite(s.lon) && typeof s.id === 'string') : [];
+        this.favorites = Array.isArray(stored) ? stored.filter(s => s && typeof s.name === 'string' && Number.isFinite(s.lat) && Number.isFinite(s.lon) && typeof s.id === 'string').map(s => ({...s, country: s.country || 'DE'})) : [];
         window.addEventListener('online', () => { this.online = true; this.refresh(); if (this.selected) this.fetchPoint(); });
         window.addEventListener('offline', () => { this.online = false; });
         this.times = Array.from({length: 48}, (_, i) => floorHour() + i * 3600);
         try {
           const config = await this.api('/api/config');
+          this.countries = config.countries || [];
+          const previous = readStorage('fographer.lastSpot', null);
+          if (previous && ['DE', 'TR'].includes(previous.country || 'DE')) this.country = previous.country || 'DE';
           if ('serviceWorker' in navigator) {
             if (config.debug) {
               const registrations = await navigator.serviceWorker.getRegistrations();
@@ -29,7 +33,7 @@
               await Promise.all(keys.filter(k => k.startsWith('fographer-')).map(k => caches.delete(k)));
             } else navigator.serviceWorker.register('/sw.js').catch(() => this.notify('Offline caching is unavailable in this browser.'));
           }
-          map = new maplibregl.Map({container: 'map', style: this.mapStyle(config), center: [10.4, 51.1], zoom: window.innerWidth < 700 ? 4.7 : 5.25, maxZoom: 16, minZoom: 3, attributionControl: false});
+          map = new maplibregl.Map({container: 'map', style: this.mapStyle(config), center: this.region()?.center || [10.4, 51.1], zoom: this.country === 'TR' ? (window.innerWidth < 700 ? 3.5 : 4.6) : window.innerWidth < 700 ? 4.7 : 5.25, maxZoom: 16, minZoom: 3, attributionControl: false});
           const navigation = new maplibregl.NavigationControl({showCompass: true, visualizePitch: true});
           map.addControl(navigation, 'top-right');
           const resetAngle = map.getContainer().querySelector('.maplibregl-ctrl-compass');
@@ -39,7 +43,7 @@
           map.on('error', event => { if (event.error) this.mapError = this.online ? 'Some map tiles could not load. Weather details and saved spots remain available.' : 'Offline: the basemap needs a connection. Your saved weather is still here.'; });
           map.on('load', () => {
             document.getElementById('map').dataset.ready = 'true';
-            map.addSource('boundary', {type: 'geojson', data: {type: 'Feature', geometry: config.boundary, properties: {}}});
+            map.addSource('boundary', {type: 'geojson', data: {type: 'Feature', geometry: this.region()?.boundary || config.boundary, properties: {}}});
             map.addLayer({id: 'boundary', type: 'line', source: 'boundary', paint: {'line-color': '#9aab83', 'line-width': 1.2, 'line-opacity': .5}});
             map.addSource('fog', {type: 'geojson', data: emptyCollection()});
             map.addLayer({id: 'fog', type: 'fill', source: 'fog', paint: {'fill-color': ['match', ['get', 'fog'], 'fog', '#b7abd4', 'favorable', '#b6cf91', '#59635b'], 'fill-opacity': ['match', ['get', 'fog'], 'fog', .45, 'favorable', .24, 0]}});
@@ -57,9 +61,24 @@
         } catch (err) { this.mapError = err.message.includes('WebGL') || err.message.includes('requestedAttributes') ? 'This browser cannot display the interactive map. Try enabling graphics acceleration. Place search and forecasts remain available.' : err.message; }
         await this.refresh();
         const previous = readStorage('fographer.lastSpot', null);
-        if (previous && Number.isFinite(previous.lat) && Number.isFinite(previous.lon)) this.selectSpot(previous.lat, previous.lon, String(previous.name || 'Saved viewpoint'));
+        if (previous && Number.isFinite(previous.lat) && Number.isFinite(previous.lon)) this.selectSpot(previous.lat, previous.lon, String(previous.name || 'Saved viewpoint'), true, previous.country || 'DE');
         pollTimer = setInterval(() => this.refresh(), 60000);
         window.addEventListener('pagehide', () => clearInterval(pollTimer));
+      },
+      region() { return this.countries.find(c => c.code === this.country); },
+      timezone() { return {timeZone: this.region()?.timezone || (this.country === 'TR' ? 'Europe/Istanbul' : 'Europe/Berlin')}; },
+      countryName() { return this.region()?.name || (this.country === 'TR' ? 'Turkey' : 'Germany'); },
+      async selectCountry(code = this.country, cancelSelection = true) {
+        if (!['DE', 'TR'].includes(code)) return;
+        if (cancelSelection) ++selectionID;
+        ++refreshID; ++searchID; searchAbort?.abort(); this.searching = false;
+        this.country = code; this.clearSpot(false); this.query = ''; this.results = []; this.searchError = '';
+        this.overview = null; this.observations = null; this.mode = 'now'; this.timeIndex = 0;
+        this.times = Array.from({length: 48}, (_, i) => floorHour() + i * 3600);
+        this.overviewMessage = 'Finding the next quiet morning…'; this.mapError = '';
+        try { localStorage.setItem('fographer.country', code); } catch {}
+        if (map?.getSource('boundary')) map.getSource('boundary').setData({type: 'Feature', geometry: this.region().boundary, properties: {}});
+        this.renderMap(); this.resetMap(); await this.refresh();
       },
       mapStyle(config) {
         const layer = (id, type, sourceLayer, paint, extra = {}) => ({id, type, source: 'osm', 'source-layer': sourceLayer, paint, ...extra});
@@ -93,7 +112,9 @@
         } finally { clearTimeout(timer); }
       },
       async refresh() {
-        const results = await Promise.allSettled([this.api('/api/overview'), this.api('/api/observations')]);
+        const id = ++refreshID, country = this.country;
+        const results = await Promise.allSettled([this.api('/api/overview?country=' + country), this.api('/api/observations?country=' + country)]);
+        if (id !== refreshID || country !== this.country) return;
         if (results[0].status === 'fulfilled') {
           this.overview = results[0].value;
           const selected = this.selectedEpoch();
@@ -124,12 +145,15 @@
         searchAbort?.abort(); const id = ++searchID; this.searchError = ''; this.results = [];
         if (this.query.trim().length < 2) { this.searching = false; return; }
         searchAbort = new AbortController(); this.searching = true; this.panelExpanded = true;
-        try { const result = await this.api('/api/search?q=' + encodeURIComponent(this.query.trim()), searchAbort.signal); if (id === searchID) { this.results = result.data; if (!result.data.length) this.searchError = 'No German places found. Try another name.'; } }
+        try { const result = await this.api('/api/search?country=' + this.country + '&q=' + encodeURIComponent(this.query.trim()), searchAbort.signal); if (id === searchID) { this.results = result.data; if (!result.data.length) this.searchError = 'No places found in ' + this.countryName() + '. Try another name.'; } }
         catch (err) { if (id === searchID) this.searchError = err.message; }
         finally { if (id === searchID) this.searching = false; }
       },
-      async selectSpot(lat, lon, name, fly = true) {
-        this.selected = {lat, lon, name}; this.point = null; this.spotError = ''; this.panelExpanded = true;
+      async selectSpot(lat, lon, name, fly = true, country = this.country) {
+        const selection = ++selectionID;
+        if (country !== this.country) await this.selectCountry(country, false);
+        if (selection !== selectionID) return;
+        this.selected = {lat, lon, name, country}; this.point = null; this.spotError = ''; this.panelExpanded = true;
         if (fly) this.station = null;
         try { localStorage.setItem('fographer.lastSpot', JSON.stringify(this.selected)); } catch { /* Storage can be disabled. */ }
         selectedMarker?.remove();
@@ -144,7 +168,7 @@
         pointAbort?.abort(); pointAbort = new AbortController(); const id = ++requestID;
         this.loadingSpot = true; this.spotError = '';
         try {
-          const data = await this.api(`/api/forecast?lat=${this.selected.lat.toFixed(4)}&lon=${this.selected.lon.toFixed(4)}`, pointAbort.signal);
+          const data = await this.api(`/api/forecast?country=${this.selected.country}&lat=${this.selected.lat.toFixed(4)}&lon=${this.selected.lon.toFixed(4)}`, pointAbort.signal);
           if (id !== requestID) return;
           this.point = data;
           if (!this.overview || !this.overview.data.times.some(t => t >= floorHour())) {
@@ -156,8 +180,8 @@
         } catch (err) { if (id === requestID) this.spotError = err.message; }
         finally { if (id === requestID) this.loadingSpot = false; }
       },
-      clearSpot() { ++requestID; pointAbort?.abort(); this.selected = null; this.point = null; this.station = null; this.loadingSpot = false; selectedMarker?.remove(); try { localStorage.removeItem('fographer.lastSpot'); } catch {} },
-      resetMap() { map?.fitBounds([[5.7, 47.1], [15.3, 55.2]], {padding: 40, duration: 700}); },
+      clearSpot(cancelSelection = true) { if (cancelSelection) ++selectionID; ++requestID; pointAbort?.abort(); this.selected = null; this.point = null; this.station = null; this.loadingSpot = false; selectedMarker?.remove(); try { localStorage.removeItem('fographer.lastSpot'); } catch {} },
+      resetMap() { const bounds = this.region()?.bounds; if (bounds) map?.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], {padding: window.innerWidth < 700 ? 20 : 40, duration: 700}); },
       locate() {
         if (!navigator.geolocation) { this.notify('Geolocation is unavailable. Search for a place instead.'); return; }
         navigator.geolocation.getCurrentPosition(p => this.selectSpot(p.coords.latitude, p.coords.longitude, 'My location'), () => this.notify('Location could not be read. Search for a place instead.'), {timeout: 10000});
@@ -168,13 +192,14 @@
       currentHour() { return this.point?.data.hours.find(h => h.time === this.selectedEpoch()); },
       nearbyHours() { const hours = this.point?.data.hours || []; let i = hours.findIndex(h => h.time >= this.selectedEpoch()); if (i < 0) i = Math.max(0, hours.length - 4); return hours.slice(i, i + 4); },
       nextSunrises() { return (this.point?.data.sun || []).filter(s => s.rise > Date.now() / 1000 && s.rise <= (this.point?.data.hours.at(-1)?.time || 0)).slice(0, 2); },
-      clock(epoch) { return epoch ? new Intl.DateTimeFormat('en-GB', {...berlin, hour: '2-digit', minute: '2-digit'}).format(epoch * 1000) : '—'; },
-      dateTime(epoch) { return epoch ? new Intl.DateTimeFormat('en-GB', {...berlin, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short'}).format(epoch * 1000) : '—'; },
-      dayLabel(epoch) { if (!epoch) return '—'; const format = d => new Intl.DateTimeFormat('en-CA', {...berlin, year: 'numeric', month: '2-digit', day: '2-digit'}).format(d); const day = format(epoch * 1000); if (day === format(Date.now())) return 'Today'; if (day === format(Date.now() + 86400000)) return 'Tomorrow'; return new Intl.DateTimeFormat('en-GB', {...berlin, weekday: 'short', day: 'numeric', month: 'short'}).format(epoch * 1000); },
+      clock(epoch) { return epoch ? new Intl.DateTimeFormat('en-GB', {...this.timezone(), hour: '2-digit', minute: '2-digit'}).format(epoch * 1000) : '—'; },
+      dateTime(epoch) { return epoch ? new Intl.DateTimeFormat('en-GB', {...this.timezone(), day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short'}).format(epoch * 1000) : '—'; },
+      dayLabel(epoch) { if (!epoch) return '—'; const format = d => new Intl.DateTimeFormat('en-CA', {...this.timezone(), year: 'numeric', month: '2-digit', day: '2-digit'}).format(d); const day = format(epoch * 1000); if (day === format(Date.now())) return 'Today'; if (day === format(Date.now() + 86400000)) return 'Tomorrow'; return new Intl.DateTimeFormat('en-GB', {...this.timezone(), weekday: 'short', day: 'numeric', month: 'short'}).format(epoch * 1000); },
       selectedTimeLabel() { const epoch = this.selectedEpoch(); return (this.mode === 'now' ? 'Now · ' : '') + this.dayLabel(epoch) + ', ' + this.clock(epoch); },
       fogLabel(state) { return {fog: 'Predicted fog', favorable: 'Favorable conditions', clear: 'No fog signal', unknown: 'Insufficient data'}[state] || 'No forecast at this hour'; },
       metric(value, unit, digits = 0) { return value == null ? '—' : Number(value).toFixed(digits) + unit; },
       visibility(value) { return value == null ? '—' : value < 1000 ? Math.round(value) + ' m' : (value / 1000).toFixed(1) + ' km'; },
+      stationVisibility() { if (this.station?.visibility == null) return '—'; const prefix = this.station.visibilityQualifier === 'atLeast' ? '≥ ' : this.station.visibilityQualifier === 'below' ? '< ' : ''; return prefix + this.visibility(this.station.visibility); },
       freshness(data) { if (!data) return ''; const age = Math.max(0, Math.floor((Date.now() / 1000 - data.fetchedAt) / 60)); const text = age < 1 ? 'just now' : age < 60 ? age + ' min ago' : Math.floor(age / 60) + ' h ago'; return (data.offline ? 'Offline copy · ' : data.stale ? 'Stale data · ' : '') + 'Retrieved ' + text + (data.warning ? '. ' + data.warning : ''); },
       isSaved() { return !!this.selected && this.favorites.some(s => Math.abs(s.lat - this.selected.lat) < .0001 && Math.abs(s.lon - this.selected.lon) < .0001); },
       persistSpots() { try { localStorage.setItem('fographer.spots', JSON.stringify(this.favorites)); if (this.selected) localStorage.setItem('fographer.lastSpot', JSON.stringify(this.selected)); } catch { this.notify('This browser could not save your spots.'); } },
