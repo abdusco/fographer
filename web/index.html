@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111817"><meta name="description" content="Find the quiet places. A fog forecast map for photographers in Germany.">
+  <title>Fographer — follow the fog</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml"><link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/assets/icon-192.png">
+  <link rel="stylesheet" href="/vendor/maplibre-gl.css"><link rel="stylesheet" href="/style.css">
+  <script defer src="/vendor/maplibre-gl.js"></script><script defer src="/app.js"></script><script defer src="/vendor/alpine.js"></script>
+</head>
+<body x-data="fographer">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Fographer home"><img src="/icon.svg" alt="" width="32" height="32"><span>fographer<span class="brand-dot">.</span></span></a>
+    <span class="tagline">A little weather. A different perspective.</span>
+    <div class="header-actions"><span class="connection" :class="online ? '' : 'disconnected'"><i></i><span x-text="online ? 'Live weather' : 'Offline'">Connecting</span></span><button class="quiet" @click="about = true" aria-label="About Fographer">About <span aria-hidden="true">↗</span></button></div>
+  </header>
+  <main class="workspace">
+    <aside class="sidebar" :class="{'expanded': panelExpanded}">
+      <button class="sheet-handle" @click="panelExpanded = !panelExpanded" :aria-expanded="panelExpanded" aria-label="Expand location details"><span></span></button>
+      <div class="sidebar-content">
+        <div class="eyebrow"><span class="tiny-line"></span> THE PHOTOGRAPHER'S WEATHER MAP</div>
+        <h1>Follow the fog.</h1><p class="intro">Find misty mornings, quiet valleys,<br>and a reason to get up early.</p>
+        <div class="search-box"><span aria-hidden="true">⌕</span><input type="search" placeholder="Find a place in Germany…" aria-label="Search German places" x-model="query" @input.debounce.350ms="search()" @keydown.escape="results = []"><span x-show="searching" class="spinner" aria-label="Searching"></span></div>
+        <div class="search-results" x-show="results.length" x-cloak><template x-for="place in results" :key="place.latitude + ',' + place.longitude"><button @click="selectSpot(place.latitude, place.longitude, place.name); results = []; query = ''"><strong x-text="place.name"></strong><span x-text="place.region"></span></button></template></div>
+        <p class="inline-error" x-show="searchError" x-text="searchError" role="status" x-cloak></p>
+        <div class="location-tools"><button class="quiet" @click="locate()">◎ Use my location</button><button class="quiet" @click="resetMap()">↗ All of Germany</button></div>
+
+        <section class="spot-panel" x-show="selected" x-cloak>
+          <div class="section-top"><span class="eyebrow">YOUR VIEWPOINT</span><button class="quiet close-spot" @click="clearSpot()" aria-label="Close selected location">×</button></div>
+          <div class="spot-title"><h2 x-text="selected?.name"></h2><button class="save-button" @click="toggleSave()" :aria-label="isSaved() ? 'Remove saved spot' : 'Save spot'" :class="{'saved': isSaved()}" x-text="isSaved() ? '★' : '☆'"></button></div>
+          <p class="coordinates" x-text="selected ? selected.lat.toFixed(4) + '° N · ' + selected.lon.toFixed(4) + '° E' : ''"></p>
+          <div class="loading-row" x-show="loadingSpot"><span class="spinner"></span> Reading the weather…</div>
+          <p class="inline-error" x-show="spotError" x-text="spotError" role="status"></p>
+          <template x-if="point">
+            <div>
+              <div class="fog-card" :class="currentHour()?.fog || 'unknown'"><div class="fog-symbol" aria-hidden="true">≋</div><div><span class="eyebrow" x-text="mode === 'now' ? 'MODEL ESTIMATE · NOW' : 'MODEL FORECAST'"></span><h3 x-text="fogLabel(currentHour()?.fog)"></h3><p x-text="selectedTimeLabel()"></p></div></div>
+              <div class="metrics"><div><span>Visibility</span><strong x-text="visibility(currentHour()?.visibility)"></strong></div><div><span>Wind</span><strong x-text="metric(currentHour()?.wind, ' km/h')"></strong></div><div><span>Temperature</span><strong x-text="metric(currentHour()?.temperature, '°C')"></strong></div><div><span>Humidity</span><strong x-text="metric(currentHour()?.humidity, '%')"></strong></div><div><span>Rain / snow</span><strong x-text="metric(currentHour()?.precipitation, ' mm/h', 1)"></strong></div><div><span>Dew point</span><strong x-text="metric(currentHour()?.dewPoint, '°C', 1)"></strong></div></div>
+              <div class="sunrise-section"><div class="section-top"><span class="eyebrow">CHASE THE FIRST LIGHT</span><span aria-hidden="true">☀</span></div><template x-for="sun in nextSunrises()" :key="sun.rise"><button class="sunrise-row" @click="jumpSunrise(sun.rise)"><span><strong x-text="dayLabel(sun.rise)"></strong><small>Sunrise <span x-text="clock(sun.rise)"></span> · sunset <span x-text="clock(sun.set)"></span></small></span><span aria-hidden="true">↗</span></button></template></div>
+              <div class="hour-strip" aria-label="Next forecast hours"><template x-for="hour in nearbyHours()" :key="hour.time"><button @click="chooseTime(hour.time)" :class="[hour.fog, {'active': selectedEpoch() === hour.time}]" :aria-label="clock(hour.time) + ': ' + fogLabel(hour.fog)"><span x-text="clock(hour.time)"></span><i></i><small x-text="visibility(hour.visibility)"></small></button></template></div>
+              <p class="data-note" :class="{'stale-note': point.stale || point.offline}" x-text="freshness(point)"></p>
+            </div>
+          </template>
+        </section>
+
+        <section class="station-panel" x-show="station && mode === 'now'" x-cloak><span class="eyebrow">AT THE WEATHER STATION</span><h3 x-text="station?.name"></h3><p class="station-status" x-text="station?.fog ? 'Station-reported fog' : station?.visibility != null && station.visibility < 1000 ? 'Measured low visibility' : 'Station observation'"></p><strong x-text="visibility(station?.visibility)"></strong><p class="data-note" x-text="station?.visibilityTime ? 'Visibility measured ' + dateTime(station.visibilityTime) : 'No visibility measurement'"></p><p class="station-weather" x-text="station?.weather"></p><p class="data-note" x-text="station?.weatherTime ? 'Weather reported ' + dateTime(station.weatherTime) : ''"></p><p class="data-note stale-note" x-show="station?.stale">This observation is over 90 minutes old.</p></section>
+
+        <section class="saved-section"><div class="section-top"><span class="eyebrow">PLACES TO RETURN TO</span><span class="count" x-text="favorites.length"></span></div><p class="empty-spots" x-show="!favorites.length">A forest edge. A bend in the river.<br>Select a spot and tap ☆ to keep it here.</p><template x-for="spot in favorites" :key="spot.id"><div class="saved-row"><button class="saved-location" @click="selectSpot(spot.lat, spot.lon, spot.name)"><span aria-hidden="true">⌖</span><strong x-text="spot.name"></strong></button><button class="quiet" @click="renameSpot(spot)" :aria-label="'Rename ' + spot.name">✎</button><button class="quiet" @click="removeSpot(spot.id)" :aria-label="'Delete ' + spot.name">×</button></div></template></section>
+        <section class="explore" x-show="!selected"><span class="eyebrow">START SOMEWHERE QUIET</span><button @click="selectSpot(48.05, 8.20, 'Black Forest')"><span>Black Forest</span><small>Forests & sheltered valleys</small><b>↗</b></button><button @click="selectSpot(50.92, 14.07, 'Saxon Switzerland')"><span>Saxon Switzerland</span><small>Sandstone & river mist</small><b>↗</b></button><button @click="selectSpot(47.58, 11.07, 'Bavarian Alps')"><span>Bavarian Alps</span><small>Lakes & mountain mornings</small><b>↗</b></button></section>
+        <p class="sidebar-footer">Less scrolling. More wandering.<br><span>Weather by DWD & Open-Meteo.</span></p>
+      </div>
+    </aside>
+    <section class="map-area" aria-label="Fog map of Germany">
+      <div id="map" aria-label="Interactive Germany map"></div>
+      <div class="map-heading"><span class="eyebrow">GERMANY</span><h2>Find your next morning.</h2><p>Ground & valley fog · next 48 hours</p></div>
+      <div class="map-controls"><button @click="mode = 'now'; renderMap()" :class="{'active':mode === 'now'}">Now</button><button @click="mode = 'forecast'; renderMap()" :class="{'active':mode === 'forecast'}">Forecast</button></div>
+      <div class="map-alert" x-show="mapError" x-text="mapError" role="status" x-cloak></div>
+      <div class="map-status" x-show="overviewMessage" x-cloak><span class="spinner" x-show="!overview"></span><span x-text="overviewMessage"></span></div>
+      <div class="legend"><span class="eyebrow">READ THE MAP</span><label><input type="checkbox" x-model="showModel" @change="renderMap()"> Model estimate / forecast</label><span><i class="legend-dot predicted"></i> Predicted fog</span><span><i class="legend-dot favorable"></i> Favorable conditions</span><label x-show="mode === 'now'"><input type="checkbox" x-model="showStations" @change="renderMap()"> Station observations</label><span x-show="mode === 'now'"><i class="legend-dot observed"></i> Reported fog / low visibility</span><small>Overview sampled every 0.3°.<br>Click for a local model forecast.</small></div>
+      <div class="timeline"><div class="timeline-heading"><div><span class="eyebrow" x-text="mode === 'now' ? 'THE VIEW RIGHT NOW' : 'PLAN YOUR EARLY START'"></span><strong x-text="selectedTimeLabel()"></strong></div><span class="timeline-zone">Berlin time</span></div><input type="range" min="0" :max="Math.max(0, times.length - 1)" step="1" x-model.number="timeIndex" @input="mode = 'forecast'; renderMap()" aria-label="Forecast hour" :disabled="!times.length"><div class="timeline-labels"><button @click="chooseTime(times[0])" x-text="times.length ? clock(times[0]) : 'Now'"></button><span>Hourly forecast</span><button @click="chooseTime(times.at(-1))" x-text="times.length ? dayLabel(times.at(-1)) + ' ' + clock(times.at(-1)) : '+48 h'"></button></div></div>
+      <span class="map-corner-note">Good photographs begin with a little uncertainty.</span>
+    </section>
+  </main>
+  <div class="toast" x-show="toast" x-text="toast" role="status" x-cloak></div>
+  <div class="modal-backdrop" x-show="about" @click.self="about = false" @keydown.escape.window="about = false" x-cloak><section class="about-modal" role="dialog" aria-modal="true" aria-label="About Fographer"><button class="quiet modal-close" @click="about = false" aria-label="Close about">×</button><span class="eyebrow">A NOTE BEFORE YOU GO</span><h2>Weather is a possibility.</h2><p>Fographer helps you find promising conditions for ground and valley fog. Small pockets of mist can form between model grid cells and weather stations.</p><h3>What the colors mean</h3><p><b>Predicted fog:</b> the model reports fog, or visibility is below 1 km with humidity at least 95% and precipitation below 0.2 mm/h.</p><p><b>Favorable conditions:</b> humidity at least 95%, temperature within 2°C of dew point, wind at most 10 km/h, and precipitation below 0.2 mm/h. This is a heuristic, not a probability.</p><p><b>Station observations:</b> separate measurements with their own timestamps. Low visibility alone does not confirm fog. Observations over 90 minutes old are marked stale and removed after three hours.</p><p>The overview samples the model every 0.3°. Selected spots use a local ICON D2 forecast at approximately 2 km model resolution. “Now” shading is also a model estimate.</p><p>Offline, your saved spots and previously loaded forecasts remain available with their age shown. The basemap needs a connection.</p><p class="credits">Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Weather © <a href="https://www.dwd.de" target="_blank" rel="noopener">DWD</a> via <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a>, adapted using the rules above. No accounts; saved spots stay in this browser.</p><button class="primary" @click="about = false">Back to the quiet places ↗</button></section></div>
+  <noscript>This interactive weather map needs JavaScript enabled.</noscript>
+</body>
+</html>
