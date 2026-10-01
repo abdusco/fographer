@@ -233,19 +233,15 @@ type Place struct {
 	Longitude float64 `json:"longitude"`
 }
 
-func (p *Provider) search(ctx context.Context, query string, country Country) ([]Place, error) {
+func (p *Provider) search(ctx context.Context, query string) ([]Place, error) {
 	if err := p.budget.wait(ctx, 1); err != nil {
 		return nil, err
 	}
 	q := url.Values{"name": {query}, "count": {"20"}, "language": {"en"}, "format": {"json"}}
-	if country.Code != "EU" {
-		q.Set("countryCode", country.Code)
-	}
 	var r struct {
 		Results []struct {
 			Name        string  `json:"name"`
 			Region      string  `json:"admin1"`
-			Country     string  `json:"country_code"`
 			CountryName string  `json:"country"`
 			Latitude    float64 `json:"latitude"`
 			Longitude   float64 `json:"longitude"`
@@ -256,12 +252,10 @@ func (p *Provider) search(ctx context.Context, query string, country Country) ([
 	}
 	places := []Place{}
 	for _, v := range r.Results {
-		if country.Code == "EU" || v.Country == country.Code {
-			if country.Code == "EU" && v.CountryName != "" {
-				v.Region = strings.Trim(strings.Join([]string{v.Region, v.CountryName}, " · "), " ·")
-			}
-			places = append(places, Place{v.Name, v.Region, v.Latitude, v.Longitude})
+		if v.CountryName != "" {
+			v.Region = strings.Trim(strings.Join([]string{v.Region, v.CountryName}, " · "), " ·")
 		}
+		places = append(places, Place{v.Name, v.Region, v.Latitude, v.Longitude})
 	}
 	return places, nil
 }

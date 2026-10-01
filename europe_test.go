@@ -78,12 +78,13 @@ func TestAutomaticPointRoutes(t *testing.T) {
 	}))
 	defer upstream.Close()
 	s.provider.forecastURL = upstream.URL
-	require.NoError(t, s.cache.put("point:52.5200,13.4100", Forecast{Hours: []Hour{{Time: 100, Fog: "fog"}}}))
-	require.NoError(t, s.cache.put("point:TR:41.0100,28.9800", Forecast{Hours: []Hour{{Time: 100, Fog: "fog"}}}))
+	require.NoError(t, s.cache.put("point:icon_d2:52.5200,13.4100", Forecast{Timezone: "Europe/Berlin", Hours: []Hour{{Time: 100, Fog: "fog"}}}))
+	require.NoError(t, s.cache.put("point:icon_eu:41.0100,28.9800", Forecast{Timezone: "Europe/Istanbul", Hours: []Hour{{Time: 100, Fog: "fog"}}}))
 	tests := []struct{ name, path, source, zone string }{
 		{"Germany", "/api/forecast?lat=52.52&lon=13.41", "ICON D2", "Europe/Berlin"},
 		{"Turkey", "/api/forecast?lat=41.01&lon=28.98", "ICON EU", "Europe/Istanbul"},
 		{"France", "/api/forecast?lat=48.85&lon=2.35", "ICON Seamless", "Europe/Paris"},
+		{"Query does not override location", "/api/forecast?country=TR&lat=52.52&lon=13.41", "ICON D2", "Europe/Berlin"},
 	}
 	app := s.routes()
 	for _, tt := range tests {
@@ -93,6 +94,53 @@ func TestAutomaticPointRoutes(t *testing.T) {
 			require.Equal(t, 200, w.Code)
 			assert.Contains(t, w.Body.String(), tt.source)
 			assert.Contains(t, w.Body.String(), tt.zone)
+		})
+	}
+}
+
+func TestEuropeRoutes(t *testing.T) {
+	cfg := configuration()
+	cfg.DataDir = t.TempDir()
+	cfg.Debug = false
+	s, err := newServer(cfg)
+	require.NoError(t, err)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, r.URL.Query().Get("countryCode"))
+		_, _ = w.Write([]byte(`{"results":[{"name":"Paris","admin1":"Île-de-France","country":"France","latitude":48.85,"longitude":2.35},{"name":"Berlin","country":"Germany","latitude":52.52,"longitude":13.41},{"name":"New York","country":"United States","latitude":40.71,"longitude":-74}]}`))
+	}))
+	defer upstream.Close()
+	s.provider.searchURL = upstream.URL
+	when := time.Now().Unix()
+	vis := 700.
+	require.NoError(t, s.cache.put("overview:europe", Overview{Type: "FeatureCollection", Times: []int64{when}, Features: []Feature{}, Spacing: 2}))
+	require.NoError(t, s.cache.put("observations:airports", []Observation{{ID: "LFPG", Name: "Paris airport", Latitude: 49, Longitude: 2.5, Visibility: &vis, VisibilityTime: when}, {ID: "KJFK", Name: "New York", Latitude: 40.71, Longitude: -74, Visibility: &vis, VisibilityTime: when}}))
+	require.NoError(t, s.cache.put("observations:germany", []Observation{{ID: "berlin", Name: "Berlin station", Latitude: 52.52, Longitude: 13.41, Visibility: &vis, VisibilityTime: when}}))
+	app := s.routes()
+	tests := []struct{ name, path, contains string }{
+		{"config", "/api/config", `"coverage"`},
+		{"health", "/api/health?country=invalid", `"overviewReady":true`},
+		{"overview", "/api/overview?country=TR", `"spacingDegrees":2`},
+		{"observations", "/api/observations?country=DE", "Paris airport"},
+		{"search", "/api/search?country=invalid&q=place", "Paris"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, httptest.NewRequest("GET", tt.path, nil))
+			require.Equal(t, 200, w.Code)
+			assert.Contains(t, w.Body.String(), tt.contains)
+			if tt.name == "config" {
+				assert.NotContains(t, w.Body.String(), `"countries"`)
+			}
+			if tt.name == "observations" {
+				assert.Contains(t, w.Body.String(), "Berlin station")
+				assert.NotContains(t, w.Body.String(), "New York")
+			}
+			if tt.name == "search" {
+				assert.Contains(t, w.Body.String(), "Berlin")
+				assert.Contains(t, w.Body.String(), "France")
+				assert.NotContains(t, w.Body.String(), "New York")
+			}
 		})
 	}
 }

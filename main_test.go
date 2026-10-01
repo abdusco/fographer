@@ -122,8 +122,8 @@ func TestRoutes(t *testing.T) {
 	now := time.Now().Unix()
 	old := now - 7200
 	visibility := 500.
-	require.NoError(t, s.cache.put("observations", []Observation{{ID: "berlin", Name: "Berlin", Latitude: 52.52, Longitude: 13.41, Time: old, Visibility: &visibility, VisibilityTime: old}}))
-	require.NoError(t, s.cache.put("point:52.5200,13.4100", Forecast{Hours: []Hour{{Time: now, Fog: "fog"}}}))
+	require.NoError(t, s.cache.put("observations:airports", []Observation{{ID: "berlin", Name: "Berlin", Latitude: 52.52, Longitude: 13.41, Time: old, Visibility: &visibility, VisibilityTime: old}}))
+	require.NoError(t, s.cache.put("point:icon_d2:52.5200,13.4100", Forecast{Hours: []Hour{{Time: now, Fog: "fog"}}}))
 	app := s.routes()
 	tests := []struct {
 		name, path string
@@ -133,10 +133,10 @@ func TestRoutes(t *testing.T) {
 		{"health", "/api/health", 200, `"overviewReady":false`},
 		{"config", "/api/config", 200, "shortbread_v1"},
 		{"warming overview", "/api/overview", 503, "warming up"},
-		{"observations", "/api/observations?country=DE", 200, `"stale":true`},
+		{"observations:airports", "/api/observations", 200, `"stale":true`},
 		{"cached point", "/api/forecast?lat=52.52&lon=13.41", 200, `"fog":"fog"`},
 		{"invalid latitude", "/api/forecast?lat=invalid&lon=13", 400, "within Europe"},
-		{"outside Germany", "/api/forecast?country=DE&lat=48.85&lon=2.35", 400, "within Germany"},
+		{"outside Europe", "/api/forecast?lat=30.04&lon=31.24", 400, "within Europe"},
 		{"nonfinite", "/api/forecast?lat=NaN&lon=13.41", 400, "within Europe"},
 		{"missing coords", "/api/forecast", 400, "within Europe"},
 		{"uncached upstream failure", "/api/forecast?lat=48.05&lon=8.2", 503, "Forecast unavailable"},
@@ -144,7 +144,7 @@ func TestRoutes(t *testing.T) {
 		{"search failure", "/api/search?q=Berlin", 503, "search unavailable"},
 		{"unknown API", "/api/no-such-route", 404, "Unknown API"},
 		{"home", "/", 200, "Follow the fog."},
-		{"service worker", "/sw.js", 200, "fographer-v5"},
+		{"service worker", "/sw.js", 200, "fographer-v6"},
 		{"map library", "/vendor/maplibre-gl.js", 200, "maplibregl"},
 		{"PWA icon", "/assets/icon-192.png", 200, "PNG"},
 	}
@@ -162,9 +162,9 @@ func TestRoutes(t *testing.T) {
 	}
 	t.Run("expired cached point fallback", func(t *testing.T) {
 		s.cache.mu.Lock()
-		e := s.cache.entries["point:52.5200,13.4100"]
+		e := s.cache.entries["point:icon_d2:52.5200,13.4100"]
 		e.FetchedAt = old
-		s.cache.entries["point:52.5200,13.4100"] = e
+		s.cache.entries["point:icon_d2:52.5200,13.4100"] = e
 		s.cache.mu.Unlock()
 		w := httptest.NewRecorder()
 		app.ServeHTTP(w, httptest.NewRequest("GET", "/api/forecast?lat=52.52&lon=13.41", nil))

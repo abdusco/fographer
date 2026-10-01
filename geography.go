@@ -39,15 +39,6 @@ var countries = []Country{
 	{Code: "EU", Name: "Europe", Timezone: "auto", TimeLabel: "UTC", Model: "icon_seamless", ModelName: "DWD ICON Seamless", Resolution: "2–11 km, selected automatically", ObservationSource: "DWD stations and airport METAR observations via NOAA Aviation Weather Center", Spacing: 2, Bounds: [4]float64{-25, 34, 60, 82}, Center: [2]float64{15, 53}, Boundary: europeJSON},
 }
 
-func countryByCode(code string) (Country, bool) {
-	for _, country := range countries {
-		if country.Code == code {
-			return country, true
-		}
-	}
-	return Country{}, false
-}
-
 type Cell struct {
 	Coordinate
 	Geometry json.RawMessage `json:"geometry"`

@@ -85,8 +85,8 @@ func (s *Server) refreshEuropeObservations(ctx context.Context) error {
 		return err
 	}
 	var old []Observation
-	if entry, ok := s.cache.lookup("observations:EU"); ok {
+	if entry, ok := s.cache.lookup("observations:airports"); ok {
 		_ = json.Unmarshal(entry.Data, &old)
 	}
-	return s.cache.put("observations:EU", freshObservations(mergeObservations(old, incoming), time.Now()))
+	return s.cache.put("observations:airports", freshObservations(mergeObservations(old, incoming), time.Now()))
 }

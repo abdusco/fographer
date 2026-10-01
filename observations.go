@@ -210,7 +210,7 @@ func (s *Server) refreshObservations(ctx context.Context) error {
 	}
 	files := reportFiles(string(body), time.Now(), s.seenReports)
 	var old []Observation
-	if entry, ok := s.cache.lookup("observations"); ok {
+	if entry, ok := s.cache.lookup("observations:germany"); ok {
 		_ = json.Unmarshal(entry.Data, &old)
 	}
 	success := false
@@ -250,10 +250,10 @@ func (s *Server) refreshObservations(ctx context.Context) error {
 		return fmt.Errorf("no DWD reports could be read")
 	}
 	if success {
-		return s.cache.put("observations", freshObservations(old, time.Now()))
+		return s.cache.put("observations:germany", freshObservations(old, time.Now()))
 	}
 	// An empty listing is not evidence of a successful weather update.
-	if _, ok := s.cache.lookup("observations"); !ok {
+	if _, ok := s.cache.lookup("observations:germany"); !ok {
 		return fmt.Errorf("DWD has no recent station reports")
 	}
 	for name := range s.seenReports {

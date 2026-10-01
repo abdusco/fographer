@@ -26,8 +26,8 @@ import (
 var webFiles embed.FS
 
 type Config struct {
-	Addr, DataDir, TileURL, ForecastURL, SearchURL, ObservationsURL, MetarURL, MetarCacheURL string
-	Debug                                                                                    bool
+	Addr, DataDir, TileURL, ForecastURL, SearchURL, ObservationsURL, MetarCacheURL string
+	Debug                                                                          bool
 }
 
 func env(key, fallback string) string {
@@ -41,13 +41,12 @@ func configuration() Config {
 	if port := os.Getenv("PORT"); port != "" {
 		addr = net.JoinHostPort("0.0.0.0", port)
 	}
-	return Config{Addr: env("ADDR", addr), Debug: os.Getenv("DEBUG") == "1", DataDir: env("DATA_DIR", "data"), TileURL: env("TILE_URL", "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt"), ForecastURL: env("FORECAST_URL", "https://api.open-meteo.com/v1/dwd-icon"), SearchURL: env("SEARCH_URL", "https://geocoding-api.open-meteo.com/v1/search"), ObservationsURL: env("OBSERVATIONS_URL", "https://opendata.dwd.de/weather/weather_reports/synoptic/germany/geojson/"), MetarURL: env("METAR_URL", "https://aviationweather.gov/api/data/metar"), MetarCacheURL: env("METAR_CACHE_URL", "https://aviationweather.gov/data/cache/metars.cache.csv.gz")}
+	return Config{Addr: env("ADDR", addr), Debug: os.Getenv("DEBUG") == "1", DataDir: env("DATA_DIR", "data"), TileURL: env("TILE_URL", "https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt"), ForecastURL: env("FORECAST_URL", "https://api.open-meteo.com/v1/dwd-icon"), SearchURL: env("SEARCH_URL", "https://geocoding-api.open-meteo.com/v1/search"), ObservationsURL: env("OBSERVATIONS_URL", "https://opendata.dwd.de/weather/weather_reports/synoptic/germany/geojson/"), MetarCacheURL: env("METAR_CACHE_URL", "https://aviationweather.gov/data/cache/metars.cache.csv.gz")}
 }
 
 type Server struct {
 	config      Config
 	cache       *Cache
-	geography   *Geography
 	geographies map[string]*Geography
 	provider    *Provider
 	logger      *slog.Logger
@@ -91,22 +90,7 @@ func newServer(cfg Config) (*Server, error) {
 			logger.Warn("request budget snapshot failed", "error", err)
 		}
 	}
-	return &Server{config: cfg, cache: cache, geography: g, geographies: map[string]*Geography{"DE": g, "TR": turkey, "EU": europe}, provider: &Provider{client: &http.Client{Timeout: 25 * time.Second}, forecastURL: cfg.ForecastURL, searchURL: cfg.SearchURL, budget: budget}, logger: logger, seenReports: map[string]bool{}}, nil
-}
-
-// Preserve Germany's existing disk cache keys across the country expansion.
-func countryCacheKey(country Country, kind string) string {
-	if country.Code == "DE" {
-		return kind
-	}
-	return kind + ":" + country.Code
-}
-func requestCountry(c *echo.Context) (Country, bool) {
-	code := strings.ToUpper(strings.TrimSpace(c.QueryParam("country")))
-	if code == "" {
-		code = "EU"
-	}
-	return countryByCode(code)
+	return &Server{config: cfg, cache: cache, geographies: map[string]*Geography{"DE": g, "TR": turkey, "EU": europe}, provider: &Provider{client: &http.Client{Timeout: 25 * time.Second}, forecastURL: cfg.ForecastURL, searchURL: cfg.SearchURL, budget: budget}, logger: logger, seenReports: map[string]bool{}}, nil
 }
 
 func (s *Server) locationCountry(lat, lon float64) (Country, bool) {
@@ -130,7 +114,8 @@ type Overview struct {
 	Spacing  float64   `json:"spacingDegrees"`
 }
 
-func (s *Server) refreshOverview(ctx context.Context, country Country) error {
+func (s *Server) refreshOverview(ctx context.Context) error {
+	country := countries[2]
 	geography := s.geographies[country.Code]
 	all := []Forecast{}
 	for start := 0; start < len(geography.cells); start += 40 {
@@ -170,35 +155,33 @@ func (s *Server) refreshOverview(ctx context.Context, country Country) error {
 			States []string `json:"states"`
 		}{i, states}})
 	}
-	return s.cache.put(countryCacheKey(country, "overview"), result)
+	return s.cache.put("overview:europe", result)
 }
 func (s *Server) workers(ctx context.Context) {
-	for _, country := range countries[2:] {
-		go func() {
-			for {
-				entry, ok := s.cache.lookup(countryCacheKey(country, "overview"))
-				if !ok || time.Since(time.Unix(entry.FetchedAt, 0)) >= 3*time.Hour {
-					if err := s.refreshOverview(ctx, country); err != nil && ctx.Err() == nil {
-						s.logger.Warn("forecast overview refresh failed", "country", country.Code, "error", err)
-					}
-				}
-				delay := 5 * time.Minute
-				if entry, ok := s.cache.lookup(countryCacheKey(country, "overview")); ok {
-					remaining := 3*time.Hour - time.Since(time.Unix(entry.FetchedAt, 0))
-					if remaining > 0 {
-						delay = remaining
-					}
-				}
-				t := time.NewTimer(delay)
-				select {
-				case <-ctx.Done():
-					t.Stop()
-					return
-				case <-t.C:
+	go func() {
+		for {
+			entry, ok := s.cache.lookup("overview:europe")
+			if !ok || time.Since(time.Unix(entry.FetchedAt, 0)) >= 3*time.Hour {
+				if err := s.refreshOverview(ctx); err != nil && ctx.Err() == nil {
+					s.logger.Warn("forecast overview refresh failed", "error", err)
 				}
 			}
-		}()
-	}
+			delay := 5 * time.Minute
+			if entry, ok := s.cache.lookup("overview:europe"); ok {
+				remaining := 3*time.Hour - time.Since(time.Unix(entry.FetchedAt, 0))
+				if remaining > 0 {
+					delay = remaining
+				}
+			}
+			t := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+		}
+	}()
 	go func() {
 		for {
 			if err := s.refreshObservations(ctx); err != nil && ctx.Err() == nil {
@@ -251,23 +234,16 @@ func (s *Server) routes() *echo.Echo {
 		}
 	})
 	e.GET("/api/config", func(c *echo.Context) error {
-		return c.JSON(200, map[string]any{"tileURL": s.config.TileURL, "timezone": "Europe/Berlin", "boundary": json.RawMessage(germanyJSON), "countries": countries, "debug": s.config.Debug})
+		return c.JSON(200, map[string]any{"tileURL": s.config.TileURL, "coverage": countries[2], "debug": s.config.Debug})
 	})
 	e.GET("/api/health", func(c *echo.Context) error {
-		country, ok := requestCountry(c)
-		if !ok {
-			return c.JSON(400, map[string]string{"error": "Unsupported coverage area. Use Europe (EU), Germany (DE), or Turkey (TR)."})
-		}
-		_, overview := s.cache.lookup(countryCacheKey(country, "overview"))
-		_, obs := s.cache.lookup(countryCacheKey(country, "observations"))
-		return c.JSON(200, map[string]any{"status": "ok", "country": country.Code, "overviewReady": overview, "observationsReady": obs, "gridCells": len(s.geographies[country.Code].cells)})
+		_, overview := s.cache.lookup("overview:europe")
+		_, obs := s.cache.lookup("observations:airports")
+		return c.JSON(200, map[string]any{"status": "ok", "overviewReady": overview, "observationsReady": obs, "gridCells": len(s.geographies["EU"].cells)})
 	})
 	e.GET("/api/overview", func(c *echo.Context) error {
-		country, ok := requestCountry(c)
-		if !ok {
-			return c.JSON(400, map[string]string{"error": "Unsupported coverage area. Use Europe (EU), Germany (DE), or Turkey (TR)."})
-		}
-		if raw := c.QueryParam("bbox"); country.Code == "EU" && raw != "" {
+		country := countries[2]
+		if raw := c.QueryParam("bbox"); raw != "" {
 			viewport, err := viewportCountry(raw)
 			if err != nil {
 				return c.JSON(400, map[string]string{"error": err.Error()})
@@ -285,18 +261,14 @@ func (s *Server) routes() *echo.Echo {
 			}
 			return c.JSON(200, Envelope{Entry: entry, Source: fmt.Sprintf("DWD ICON Seamless via Open-Meteo · %.2f° sampled overview", viewport.Spacing), Stale: stale, Warning: warning, Units: units})
 		}
-		entry, ok := s.cache.lookup(countryCacheKey(country, "overview"))
+		entry, ok := s.cache.lookup("overview:europe")
 		if !ok {
 			return unavailable(c, "The "+country.Name+" forecast is warming up. Try again shortly; you can already select a spot.")
 		}
 		return c.JSON(200, Envelope{Entry: entry, Source: fmt.Sprintf("%s via Open-Meteo · %.1f° sampled overview", country.ModelName, country.Spacing), Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 3*time.Hour, Units: units})
 	})
 	e.GET("/api/observations", func(c *echo.Context) error {
-		country, ok := requestCountry(c)
-		if !ok {
-			return c.JSON(400, map[string]string{"error": "Unsupported coverage area. Use Europe (EU), Germany (DE), or Turkey (TR)."})
-		}
-		entry, ok := s.cache.lookup(countryCacheKey(country, "observations"))
+		entry, ok := s.cache.lookup("observations:airports")
 		if !ok {
 			return unavailable(c, "Station observations are not available yet.")
 		}
@@ -304,18 +276,16 @@ func (s *Server) routes() *echo.Echo {
 		if err := json.Unmarshal(entry.Data, &all); err != nil {
 			return err
 		}
-		if country.Code == "EU" {
-			if german, ok := s.cache.lookup("observations"); ok {
-				var stations []Observation
-				if json.Unmarshal(german.Data, &stations) == nil {
-					all = append(all, stations...)
-				}
+		if german, ok := s.cache.lookup("observations:germany"); ok {
+			var stations []Observation
+			if json.Unmarshal(german.Data, &stations) == nil {
+				all = append(all, stations...)
 			}
 		}
 		fresh := freshObservations(all, time.Now())
 		filtered := []Observation{}
 		for _, o := range fresh {
-			if s.geographies[country.Code].contains(o.Latitude, o.Longitude) {
+			if _, inside := s.locationCountry(o.Latitude, o.Longitude); inside {
 				filtered = append(filtered, o)
 			}
 		}
@@ -324,24 +294,16 @@ func (s *Server) routes() *echo.Echo {
 			return err
 		}
 		entry.Data = b
-		return c.JSON(200, Envelope{Entry: entry, Source: country.ObservationSource, Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 20*time.Minute, Units: units})
+		return c.JSON(200, Envelope{Entry: entry, Source: countries[2].ObservationSource, Stale: time.Since(time.Unix(entry.FetchedAt, 0)) > 20*time.Minute, Units: units})
 	})
 	e.GET("/api/forecast", func(c *echo.Context) error {
-		country, ok := requestCountry(c)
-		if !ok {
-			return c.JSON(400, map[string]string{"error": "Unsupported coverage area. Use Europe (EU), Germany (DE), or Turkey (TR)."})
-		}
 		lat, errLat := strconv.ParseFloat(c.QueryParam("lat"), 64)
 		lon, errLon := strconv.ParseFloat(c.QueryParam("lon"), 64)
-		if c.QueryParam("country") == "" && errLat == nil && errLon == nil {
-			if detected, inside := s.locationCountry(lat, lon); inside {
-				country = detected
-			}
+		country, inside := s.locationCountry(lat, lon)
+		if errLat != nil || errLon != nil || !inside {
+			return c.JSON(400, map[string]string{"error": "Select a location within Europe."})
 		}
-		if errLat != nil || errLon != nil || !s.geographies[country.Code].contains(lat, lon) {
-			return c.JSON(400, map[string]string{"error": "Select a location within " + country.Name + "."})
-		}
-		key := fmt.Sprintf("%s:%.4f,%.4f", countryCacheKey(country, "point"), lat, lon)
+		key := fmt.Sprintf("point:%s:%.4f,%.4f", country.Model, lat, lon)
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 35*time.Second)
 		defer cancel()
 		entry, stale, err := s.cache.load(ctx, key, time.Hour, func(ctx context.Context) (any, error) {
@@ -359,32 +321,18 @@ func (s *Server) routes() *echo.Echo {
 		if err != nil {
 			warning = "Provider unavailable; showing the last saved forecast."
 		}
-		// Older German and Turkish snapshots predate the timezone field.
-		if country.Timezone != "auto" {
-			var forecast Forecast
-			if json.Unmarshal(entry.Data, &forecast) == nil && forecast.Timezone == "" {
-				forecast.Timezone = country.Timezone
-				if b, err := json.Marshal(forecast); err == nil {
-					entry.Data = b
-				}
-			}
-		}
 		return c.JSON(200, Envelope{Entry: entry, Source: country.ModelName + " via Open-Meteo · model forecast", Stale: stale, Warning: warning, Units: units})
 	})
 	e.GET("/api/search", func(c *echo.Context) error {
-		country, ok := requestCountry(c)
-		if !ok {
-			return c.JSON(400, map[string]string{"error": "Unsupported coverage area. Use Europe (EU), Germany (DE), or Turkey (TR)."})
-		}
 		query := strings.TrimSpace(c.QueryParam("q"))
 		if len([]rune(query)) < 2 || len(query) > 120 {
 			return c.JSON(400, map[string]string{"error": "Enter between 2 and 120 characters."})
 		}
 		ctx, cancel := context.WithTimeout(c.Request().Context(), 30*time.Second)
 		defer cancel()
-		entry, stale, err := s.cache.load(ctx, countryCacheKey(country, "search")+":"+strings.ToLower(query), 24*time.Hour, func(ctx context.Context) (any, error) {
-			places, err := s.provider.search(ctx, query, country)
-			if err != nil || country.Code != "EU" {
+		entry, stale, err := s.cache.load(ctx, "search:europe:"+strings.ToLower(query), 24*time.Hour, func(ctx context.Context) (any, error) {
+			places, err := s.provider.search(ctx, query)
+			if err != nil {
 				return places, err
 			}
 			filtered := []Place{}

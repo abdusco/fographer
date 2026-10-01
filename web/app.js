@@ -1,6 +1,6 @@
 /* MapLibre is deliberately kept outside Alpine's reactive object. */
 (() => {
-  let map, selectedMarker, requestID = 0, selectionID = 0, searchID = 0, refreshID = 0, pointAbort, searchAbort, pollTimer, moveTimer;
+  let map, selectedMarker, requestID = 0, searchID = 0, refreshID = 0, pointAbort, searchAbort, pollTimer, moveTimer;
   const emptyCollection = () => ({type: 'FeatureCollection', features: []});
   const readStorage = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
   const floorHour = () => Math.floor(Date.now() / 3600000) * 3600;
@@ -12,17 +12,16 @@
       overview: null, observations: null, overviewMessage: 'Finding the next quiet morning…', mapError: '',
       mode: 'now', timeIndex: 0, times: [], showModel: true, showStations: true,
       favorites: [],
-      country: 'EU',
-      countries: [],
+      coverage: null,
       async init() {
         const stored = readStorage('fographer.spots', []);
-        this.favorites = Array.isArray(stored) ? stored.filter(s => s && typeof s.name === 'string' && Number.isFinite(s.lat) && Number.isFinite(s.lon) && typeof s.id === 'string').map(s => ({...s, country: s.country || 'DE'})) : [];
+        this.favorites = Array.isArray(stored) ? stored.filter(s => s && typeof s.name === 'string' && Number.isFinite(s.lat) && Number.isFinite(s.lon) && typeof s.id === 'string') : [];
         window.addEventListener('online', () => { this.online = true; this.refresh(); if (this.selected) this.fetchPoint(); });
         window.addEventListener('offline', () => { this.online = false; });
         this.times = Array.from({length: 48}, (_, i) => floorHour() + i * 3600);
         try {
           const config = await this.api('/api/config');
-          this.countries = config.countries || [];
+          this.coverage = config.coverage;
           if ('serviceWorker' in navigator) {
             if (config.debug) {
               const registrations = await navigator.serviceWorker.getRegistrations();
@@ -41,7 +40,7 @@
           map.on('error', event => { if (event.error) this.mapError = this.online ? 'Some map tiles could not load. Weather details and saved spots remain available.' : 'Offline: the basemap needs a connection. Your saved weather is still here.'; });
           map.on('load', () => {
             document.getElementById('map').dataset.ready = 'true';
-            map.addSource('boundary', {type: 'geojson', data: {type: 'Feature', geometry: this.region()?.boundary || config.boundary, properties: {}}});
+            map.addSource('boundary', {type: 'geojson', data: {type: 'Feature', geometry: this.coverage.boundary, properties: {}}});
             map.addLayer({id: 'boundary', type: 'line', source: 'boundary', paint: {'line-color': '#9aab83', 'line-width': 1.2, 'line-opacity': .5}});
             map.addSource('fog', {type: 'geojson', data: emptyCollection()});
             map.addLayer({id: 'fog', type: 'fill', source: 'fog', paint: {'fill-color': ['match', ['get', 'fog'], 'fog', '#b7abd4', 'favorable', '#b6cf91', '#59635b'], 'fill-opacity': ['match', ['get', 'fog'], 'fog', .45, 'favorable', .24, 0]}});
@@ -60,14 +59,12 @@
         } catch (err) { this.mapError = err.message.includes('WebGL') || err.message.includes('requestedAttributes') ? 'This browser cannot display the interactive map. Try enabling graphics acceleration. Place search and forecasts remain available.' : err.message; }
         await this.refresh();
         const previous = readStorage('fographer.lastSpot', null);
-        if (previous && Number.isFinite(previous.lat) && Number.isFinite(previous.lon)) this.selectSpot(previous.lat, previous.lon, String(previous.name || 'Saved viewpoint'), true, previous.country || 'DE');
+        if (previous && Number.isFinite(previous.lat) && Number.isFinite(previous.lon)) this.selectSpot(previous.lat, previous.lon, String(previous.name || 'Saved viewpoint'));
         pollTimer = setInterval(() => this.refresh(), 60000);
         window.addEventListener('pagehide', () => { clearInterval(pollTimer); clearTimeout(moveTimer); });
       },
-      region() { return this.countries.find(c => c.code === this.country); },
-      timezone() { return {timeZone: this.point?.data.timezone || (this.selected?.country === 'DE' ? 'Europe/Berlin' : this.selected?.country === 'TR' ? 'Europe/Istanbul' : 'UTC')}; },
+      timezone() { return {timeZone: this.point?.data.timezone || 'UTC'}; },
       timeLabel() { return this.timezone().timeZone.replaceAll('_', ' ') + (this.selected ? ' · viewpoint time' : ' · map time'); },
-      countryName() { return 'Europe'; },
       mapStyle(config) {
         const layer = (id, type, sourceLayer, paint, extra = {}) => ({id, type, source: 'osm', 'source-layer': sourceLayer, paint, ...extra});
         return {version: 8, glyphs: location.origin + '/fonts/{fontstack}/{range}.pbf', sources: {osm: {type: 'vector', tiles: [config.tileURL], maxzoom: 14, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'}}, layers: [
@@ -100,11 +97,11 @@
         } finally { clearTimeout(timer); }
       },
       async refresh() {
-        const id = ++refreshID, country = this.country;
+        const id = ++refreshID;
         let overviewPath = '/api/overview';
         if (map && map.getZoom() >= 5) { const b = map.getBounds(); overviewPath += '?bbox=' + [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(n => n.toFixed(4)).join(','); }
         const results = await Promise.allSettled([this.api(overviewPath), this.api('/api/observations')]);
-        if (id !== refreshID || country !== this.country) return;
+        if (id !== refreshID) return;
         if (results[0].status === 'fulfilled') {
           this.overview = results[0].value;
           const selected = this.selectedEpoch();
@@ -139,10 +136,8 @@
         catch (err) { if (id === searchID) this.searchError = err.message; }
         finally { if (id === searchID) this.searching = false; }
       },
-      async selectSpot(lat, lon, name, fly = true, country = this.country) {
-        const selection = ++selectionID;
-        if (selection !== selectionID) return;
-        this.selected = {lat, lon, name, country}; this.point = null; this.spotError = ''; this.panelExpanded = true;
+      async selectSpot(lat, lon, name, fly = true) {
+        this.selected = {lat, lon, name}; this.point = null; this.spotError = ''; this.panelExpanded = true;
         if (fly) this.station = null;
         try { localStorage.setItem('fographer.lastSpot', JSON.stringify(this.selected)); } catch { /* Storage can be disabled. */ }
         selectedMarker?.remove();
@@ -169,8 +164,8 @@
         } catch (err) { if (id === requestID) this.spotError = err.message; }
         finally { if (id === requestID) this.loadingSpot = false; }
       },
-      clearSpot(cancelSelection = true) { if (cancelSelection) ++selectionID; ++requestID; pointAbort?.abort(); this.selected = null; this.point = null; this.station = null; this.loadingSpot = false; selectedMarker?.remove(); try { localStorage.removeItem('fographer.lastSpot'); } catch {} },
-      resetMap() { const bounds = this.region()?.bounds; if (bounds) map?.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], {padding: window.innerWidth < 700 ? 20 : 40, duration: 700}); },
+      clearSpot() { ++requestID; pointAbort?.abort(); this.selected = null; this.point = null; this.station = null; this.loadingSpot = false; selectedMarker?.remove(); try { localStorage.removeItem('fographer.lastSpot'); } catch {} },
+      resetMap() { const bounds = this.coverage?.bounds; if (bounds) map?.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], {padding: window.innerWidth < 700 ? 20 : 40, duration: 700}); },
       locate() {
         if (!navigator.geolocation) { this.notify('Geolocation is unavailable. Search for a place instead.'); return; }
         navigator.geolocation.getCurrentPosition(p => this.selectSpot(p.coords.latitude, p.coords.longitude, 'My location'), () => this.notify('Location could not be read. Search for a place instead.'), {timeout: 10000});

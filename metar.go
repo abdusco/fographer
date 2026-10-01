@@ -1,16 +1,10 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // AWC JSON visibility is in statute miles, and may include a lower/upper
@@ -56,62 +50,4 @@ func metarFog(weather string) bool {
 		}
 	}
 	return false
-}
-func decodeMETARs(r io.Reader) ([]Observation, error) {
-	var reports []struct {
-		ID         string  `json:"icaoId"`
-		Name       string  `json:"name"`
-		Lat        float64 `json:"lat"`
-		Lon        float64 `json:"lon"`
-		Time       int64   `json:"obsTime"`
-		Visibility any     `json:"visib"`
-		Weather    string  `json:"wxString"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r, 5<<20)).Decode(&reports); err != nil {
-		return nil, err
-	}
-	result := []Observation{}
-	for _, r := range reports {
-		if !strings.HasPrefix(r.ID, "LT") || r.Time <= 0 {
-			continue
-		}
-		visibility, qualifier := metarVisibility(r.Visibility)
-		weather := strings.TrimSpace(r.Weather)
-		if weather == "" {
-			weather = "No significant weather reported"
-		}
-		o := Observation{ID: r.ID, Name: r.Name, Latitude: r.Lat, Longitude: r.Lon, Time: r.Time, Visibility: visibility, VisibilityQualifier: qualifier, Weather: weather, WeatherTime: r.Time, Fog: metarFog(r.Weather)}
-		if visibility != nil {
-			o.VisibilityTime = r.Time
-		}
-		result = append(result, o)
-	}
-	return mergeObservations(nil, result), nil
-}
-func (s *Server) refreshTurkeyObservations(ctx context.Context) error {
-	q := url.Values{"bbox": {"35.5,25.5,42.5,45"}, "format": {"json"}, "hours": {"3"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.config.MetarURL+"?"+q.Encode(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "Fographer/1.0 (Turkey photography weather map)")
-	response, err := s.provider.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	var incoming []Observation
-	if response.StatusCode == http.StatusOK {
-		incoming, err = decodeMETARs(response.Body)
-		if err != nil {
-			return err
-		}
-	} else if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("airport observations returned HTTP %d", response.StatusCode)
-	}
-	var old []Observation
-	if entry, ok := s.cache.lookup("observations:TR"); ok {
-		_ = json.Unmarshal(entry.Data, &old)
-	}
-	return s.cache.put("observations:TR", freshObservations(mergeObservations(old, incoming), time.Now()))
 }
