@@ -53,12 +53,14 @@ type Sun struct {
 	Set  int64 `json:"set"`
 }
 type Forecast struct {
+	Timezone  string  `json:"timezone,omitempty"`
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
 	Hours     []Hour  `json:"hours"`
 	Sun       []Sun   `json:"sun"`
 }
 type modelResponse struct {
+	Timezone  string  `json:"timezone"`
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
 	Hourly    struct {
@@ -86,7 +88,7 @@ func value(a []*float64, i int) *float64 {
 	return a[i]
 }
 func (r modelResponse) forecast() (Forecast, error) {
-	f := Forecast{Latitude: r.Latitude, Longitude: r.Longitude, Hours: []Hour{}, Sun: []Sun{}}
+	f := Forecast{Timezone: r.Timezone, Latitude: r.Latitude, Longitude: r.Longitude, Hours: []Hour{}, Sun: []Sun{}}
 	if len(r.Hourly.Time) == 0 {
 		return f, errors.New("provider returned no forecast hours")
 	}
@@ -235,14 +237,18 @@ func (p *Provider) search(ctx context.Context, query string, country Country) ([
 	if err := p.budget.wait(ctx, 1); err != nil {
 		return nil, err
 	}
-	q := url.Values{"name": {query}, "count": {"8"}, "language": {"en"}, "format": {"json"}, "countryCode": {country.Code}}
+	q := url.Values{"name": {query}, "count": {"20"}, "language": {"en"}, "format": {"json"}}
+	if country.Code != "EU" {
+		q.Set("countryCode", country.Code)
+	}
 	var r struct {
 		Results []struct {
-			Name      string  `json:"name"`
-			Region    string  `json:"admin1"`
-			Country   string  `json:"country_code"`
-			Latitude  float64 `json:"latitude"`
-			Longitude float64 `json:"longitude"`
+			Name        string  `json:"name"`
+			Region      string  `json:"admin1"`
+			Country     string  `json:"country_code"`
+			CountryName string  `json:"country"`
+			Latitude    float64 `json:"latitude"`
+			Longitude   float64 `json:"longitude"`
 		} `json:"results"`
 	}
 	if err := p.get(ctx, p.searchURL+"?"+q.Encode(), &r); err != nil {
@@ -250,7 +256,10 @@ func (p *Provider) search(ctx context.Context, query string, country Country) ([
 	}
 	places := []Place{}
 	for _, v := range r.Results {
-		if v.Country == country.Code {
+		if country.Code == "EU" || v.Country == country.Code {
+			if country.Code == "EU" && v.CountryName != "" {
+				v.Region = strings.Trim(strings.Join([]string{v.Region, v.CountryName}, " · "), " ·")
+			}
 			places = append(places, Place{v.Name, v.Region, v.Latitude, v.Longitude})
 		}
 	}

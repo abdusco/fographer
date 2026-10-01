@@ -1,4 +1,4 @@
-const VERSION = 'fographer-v4';
+const VERSION = 'fographer-v5';
 const SHELL = VERSION + '-shell';
 const WEATHER = VERSION + '-weather';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/icon.svg', '/manifest.webmanifest', '/assets/icon-192.png', '/assets/icon-512.png', '/vendor/alpine.js', '/vendor/maplibre-gl.js', '/vendor/maplibre-gl.css', ...['0-255', '256-511', '512-767', '768-1023'].map(r => '/fonts/Open%20Sans%20Semibold/' + r + '.pbf')];

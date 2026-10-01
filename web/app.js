@@ -1,6 +1,6 @@
 /* MapLibre is deliberately kept outside Alpine's reactive object. */
 (() => {
-  let map, selectedMarker, requestID = 0, selectionID = 0, searchID = 0, refreshID = 0, pointAbort, searchAbort, pollTimer;
+  let map, selectedMarker, requestID = 0, selectionID = 0, searchID = 0, refreshID = 0, pointAbort, searchAbort, pollTimer, moveTimer;
   const emptyCollection = () => ({type: 'FeatureCollection', features: []});
   const readStorage = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
   const floorHour = () => Math.floor(Date.now() / 3600000) * 3600;
@@ -12,7 +12,7 @@
       overview: null, observations: null, overviewMessage: 'Finding the next quiet morning…', mapError: '',
       mode: 'now', timeIndex: 0, times: [], showModel: true, showStations: true,
       favorites: [],
-      country: ['DE', 'TR'].includes(readStorage('fographer.country', 'DE')) ? readStorage('fographer.country', 'DE') : 'DE',
+      country: 'EU',
       countries: [],
       async init() {
         const stored = readStorage('fographer.spots', []);
@@ -23,8 +23,6 @@
         try {
           const config = await this.api('/api/config');
           this.countries = config.countries || [];
-          const previous = readStorage('fographer.lastSpot', null);
-          if (previous && ['DE', 'TR'].includes(previous.country || 'DE')) this.country = previous.country || 'DE';
           if ('serviceWorker' in navigator) {
             if (config.debug) {
               const registrations = await navigator.serviceWorker.getRegistrations();
@@ -33,7 +31,7 @@
               await Promise.all(keys.filter(k => k.startsWith('fographer-')).map(k => caches.delete(k)));
             } else navigator.serviceWorker.register('/sw.js').catch(() => this.notify('Offline caching is unavailable in this browser.'));
           }
-          map = new maplibregl.Map({container: 'map', style: this.mapStyle(config), center: this.region()?.center || [10.4, 51.1], zoom: this.country === 'TR' ? (window.innerWidth < 700 ? 3.5 : 4.6) : window.innerWidth < 700 ? 4.7 : 5.25, maxZoom: 16, minZoom: 3, attributionControl: false});
+          map = new maplibregl.Map({container: 'map', style: this.mapStyle(config), center: [15, 53], zoom: window.innerWidth < 700 ? 3 : 4, maxZoom: 16, minZoom: 2, attributionControl: false});
           const navigation = new maplibregl.NavigationControl({showCompass: true, visualizePitch: true});
           map.addControl(navigation, 'top-right');
           const resetAngle = map.getContainer().querySelector('.maplibregl-ctrl-compass');
@@ -58,28 +56,18 @@
             map.on('mouseleave', 'stations', () => map.getCanvas().style.cursor = '');
             this.renderMap();
           });
+          map.on('moveend', () => { clearTimeout(moveTimer); moveTimer = setTimeout(() => this.refresh(), 800); });
         } catch (err) { this.mapError = err.message.includes('WebGL') || err.message.includes('requestedAttributes') ? 'This browser cannot display the interactive map. Try enabling graphics acceleration. Place search and forecasts remain available.' : err.message; }
         await this.refresh();
         const previous = readStorage('fographer.lastSpot', null);
         if (previous && Number.isFinite(previous.lat) && Number.isFinite(previous.lon)) this.selectSpot(previous.lat, previous.lon, String(previous.name || 'Saved viewpoint'), true, previous.country || 'DE');
         pollTimer = setInterval(() => this.refresh(), 60000);
-        window.addEventListener('pagehide', () => clearInterval(pollTimer));
+        window.addEventListener('pagehide', () => { clearInterval(pollTimer); clearTimeout(moveTimer); });
       },
       region() { return this.countries.find(c => c.code === this.country); },
-      timezone() { return {timeZone: this.region()?.timezone || (this.country === 'TR' ? 'Europe/Istanbul' : 'Europe/Berlin')}; },
-      countryName() { return this.region()?.name || (this.country === 'TR' ? 'Turkey' : 'Germany'); },
-      async selectCountry(code = this.country, cancelSelection = true) {
-        if (!['DE', 'TR'].includes(code)) return;
-        if (cancelSelection) ++selectionID;
-        ++refreshID; ++searchID; searchAbort?.abort(); this.searching = false;
-        this.country = code; this.clearSpot(false); this.query = ''; this.results = []; this.searchError = '';
-        this.overview = null; this.observations = null; this.mode = 'now'; this.timeIndex = 0;
-        this.times = Array.from({length: 48}, (_, i) => floorHour() + i * 3600);
-        this.overviewMessage = 'Finding the next quiet morning…'; this.mapError = '';
-        try { localStorage.setItem('fographer.country', code); } catch {}
-        if (map?.getSource('boundary')) map.getSource('boundary').setData({type: 'Feature', geometry: this.region().boundary, properties: {}});
-        this.renderMap(); this.resetMap(); await this.refresh();
-      },
+      timezone() { return {timeZone: this.point?.data.timezone || (this.selected?.country === 'DE' ? 'Europe/Berlin' : this.selected?.country === 'TR' ? 'Europe/Istanbul' : 'UTC')}; },
+      timeLabel() { return this.timezone().timeZone.replaceAll('_', ' ') + (this.selected ? ' · viewpoint time' : ' · map time'); },
+      countryName() { return 'Europe'; },
       mapStyle(config) {
         const layer = (id, type, sourceLayer, paint, extra = {}) => ({id, type, source: 'osm', 'source-layer': sourceLayer, paint, ...extra});
         return {version: 8, glyphs: location.origin + '/fonts/{fontstack}/{range}.pbf', sources: {osm: {type: 'vector', tiles: [config.tileURL], maxzoom: 14, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'}}, layers: [
@@ -113,7 +101,9 @@
       },
       async refresh() {
         const id = ++refreshID, country = this.country;
-        const results = await Promise.allSettled([this.api('/api/overview?country=' + country), this.api('/api/observations?country=' + country)]);
+        let overviewPath = '/api/overview';
+        if (map && map.getZoom() >= 5) { const b = map.getBounds(); overviewPath += '?bbox=' + [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map(n => n.toFixed(4)).join(','); }
+        const results = await Promise.allSettled([this.api(overviewPath), this.api('/api/observations')]);
         if (id !== refreshID || country !== this.country) return;
         if (results[0].status === 'fulfilled') {
           this.overview = results[0].value;
@@ -145,13 +135,12 @@
         searchAbort?.abort(); const id = ++searchID; this.searchError = ''; this.results = [];
         if (this.query.trim().length < 2) { this.searching = false; return; }
         searchAbort = new AbortController(); this.searching = true; this.panelExpanded = true;
-        try { const result = await this.api('/api/search?country=' + this.country + '&q=' + encodeURIComponent(this.query.trim()), searchAbort.signal); if (id === searchID) { this.results = result.data; if (!result.data.length) this.searchError = 'No places found in ' + this.countryName() + '. Try another name.'; } }
+        try { const result = await this.api('/api/search?q=' + encodeURIComponent(this.query.trim()), searchAbort.signal); if (id === searchID) { this.results = result.data; if (!result.data.length) this.searchError = 'No places found in Europe. Try another name.'; } }
         catch (err) { if (id === searchID) this.searchError = err.message; }
         finally { if (id === searchID) this.searching = false; }
       },
       async selectSpot(lat, lon, name, fly = true, country = this.country) {
         const selection = ++selectionID;
-        if (country !== this.country) await this.selectCountry(country, false);
         if (selection !== selectionID) return;
         this.selected = {lat, lon, name, country}; this.point = null; this.spotError = ''; this.panelExpanded = true;
         if (fly) this.station = null;
@@ -168,7 +157,7 @@
         pointAbort?.abort(); pointAbort = new AbortController(); const id = ++requestID;
         this.loadingSpot = true; this.spotError = '';
         try {
-          const data = await this.api(`/api/forecast?country=${this.selected.country}&lat=${this.selected.lat.toFixed(4)}&lon=${this.selected.lon.toFixed(4)}`, pointAbort.signal);
+          const data = await this.api(`/api/forecast?lat=${this.selected.lat.toFixed(4)}&lon=${this.selected.lon.toFixed(4)}`, pointAbort.signal);
           if (id !== requestID) return;
           this.point = data;
           if (!this.overview || !this.overview.data.times.some(t => t >= floorHour())) {

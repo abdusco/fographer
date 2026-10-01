@@ -1,6 +1,6 @@
 # Fographer
 
-A fog map for photographers in Germany and Turkey. Discover ground and valley fog, inspect the next 48 hours at a viewpoint, and save places worth returning to.
+A fog map for photographers across Europe, including Turkey. Discover ground and valley fog, inspect the next 48 hours at a viewpoint, and save places worth returning to.
 
 Go + Echo v5, Alpine.js, and MapLibre GL JS. Browser libraries and label fonts are vendored. There is no frontend build step, Node requirement, map account, or API key.
 
@@ -12,7 +12,7 @@ Requires Go 1.25 or newer and an internet connection for weather and map tiles.
 go run .
 ```
 
-Open **http://localhost:8080**. The country overviews warm up in the background, usually within a few minutes. You can select a spot while they load. Observation ingestion also runs independently. Provider failures are shown in the interface and server logs.
+Open **http://localhost:8080**. The Europe overview warms up in the background, usually within a few minutes. You can select a spot while they load. Observation ingestion also runs independently. Provider failures are shown in the interface and server logs.
 
 Set `PORT` to choose a port and listen on all interfaces:
 
@@ -41,24 +41,27 @@ Edit CSS, JavaScript, or HTML and refresh the browser; no rebuild is needed for 
 
 ## Use
 
-- Choose Germany or Turkey, then click the map, search a place, or choose one of the suggested regions.
-- Switch between Now and Forecast. The timeline displays Berlin time for Germany and Istanbul time for Turkey, regardless of your device timezone.
+- Click the map, search anywhere in Europe, or choose a suggested viewpoint. Forecast sources are selected automatically; there is no country picker.
+- Switch between Now and Forecast. The map uses UTC until you select a viewpoint; then the timeline uses that location’s timezone, regardless of your device timezone.
 - Use the compass button beside the zoom controls to reset bearing, tilt, and roll to a flat, north-up view.
 - Inspect visibility, wind, humidity, precipitation, and sunrise/sunset. Sunrise shortcuts select the containing forecast hour.
-- Tap the star to save a spot. Use the pencil to rename it and × to delete it. Favorites show their country; choosing one switches the map automatically. Existing German favorites remain supported. Favorites stay in this browser and do not sync between devices.
+- Tap the star to save a spot. Use the pencil to rename it and × to delete it. Choosing a favorite moves the map to its location. Existing German and Turkish favorites remain supported. Favorites stay in this browser and do not sync between devices.
 - Station markers appear only in Now. Their measurements describe the station, not the entire surrounding area.
 - On phones, use the bottom-sheet handle to expand or collapse location details.
 
 ## Weather interpretation
 
-The shaded map is always a **model estimate or forecast**, including Now. It uses DWD models through Open-Meteo. Each overview is clipped to its country boundary; selected viewpoints request their own local model forecast.
+The shaded map is always a **model estimate or forecast**, including Now. It uses DWD models through Open-Meteo. The overview is clipped to European land boundaries; selected viewpoints request their own local model forecast.
 
 | Country | Forecast model | Native model resolution | Overview grid | Local timezone | Observations |
 | --- | --- | --- | --- | --- | --- |
-| Germany | ICON D2 | Approximately 2 km | 0.3° | Europe/Berlin | DWD stations |
-| Turkey | ICON EU | Approximately 7 km | 0.5° | Europe/Istanbul | Airport METARs via NOAA AWC |
+| Germany viewpoints | ICON D2 | Approximately 2 km | Adaptive | Europe/Berlin | DWD stations + airport METARs |
+| Turkey viewpoints | ICON EU | Approximately 7 km | Adaptive | Europe/Istanbul | Airport METARs via NOAA AWC |
+| Other European viewpoints | ICON Seamless | Approximately 2–11 km, by model coverage | Adaptive | Automatic from coordinates | Airport METARs via NOAA AWC |
 
-Turkey's larger overview cells keep the combined country refreshes within the personal-use API budget. This sampling spacing does not change point forecasts or imply that fog fills an entire cell.
+The background continent overview samples every 2°. At zoom level 5 and above, the visible map requests a finer grid, starting at 0.25° and increasing spacing until there are at most 64 samples. Grid bounds are snapped for cache reuse. This spacing does not change point forecasts or imply that fog fills an entire cell.
+
+Coverage includes European land from Iceland to western Russia (60° E), north to Svalbard (82° N), plus Turkey, Cyprus, and the Caucasus. Overseas territories outside this region are excluded. Natural Earth boundaries are approximate; coastal viewpoints may occasionally fall outside the land mask. ICON Seamless chooses regional or global forecasts automatically. Visibility is unavailable in ICON Global; it appears as —, while other available inputs still inform the fog rules.
 
 **Predicted fog:** weather code 45 or 48, or visibility below 1 km with humidity ≥95% and precipitation below 0.2 mm/hour.
 
@@ -66,11 +69,11 @@ Turkey's larger overview cells keep the combined country refreshes within the pe
 
 Missing values appear as unknown or —. Predictions cannot resolve every forest edge, river bend, or sheltered valley. There is no cloud-inversion or above-the-clouds forecasting in this version.
 
-German observations are read from DWD's compressed SYNOP GeoJSON reports. Turkey uses airport METAR reports through NOAA's Aviation Weather Center, filtered to Turkish airports and the country boundary. Airport coverage is sparse between airports and does not confirm conditions in a distant valley. METAR visibility is converted from statute miles to metres; bounds such as `6+` or `M1/4` remain visible as ≥ or <.
+German observations are read from DWD's compressed SYNOP GeoJSON reports. Europe uses NOAA's bulk METAR CSV cache, filtered by European land boundaries. The bulk feed avoids the query API's 400-report cap. Airport coverage is sparse between airports and does not confirm conditions in a distant valley. METAR visibility is converted from statute miles to metres; bounds such as `6+` or `M1/4` remain visible as ≥ or <.
 
 Relevant fields retain their own measurement times when a newer report omits them. Markers fade after 90 minutes; measurements older than three hours are removed. Reported fog and measured low visibility have separate labels.
 
-Both overviews refresh every three hours, point forecasts cache for one hour, observations poll every ten minutes, and place search caches for 24 hours. Country caches are separate; Germany's original disk cache keys are retained. Fresh overviews survive a server restart without an unnecessary refetch. Refreshes share a per-location request budget, limited to 400 location calls/minute and 9,000/day. The budget persists across restarts. This app defaults to personal, noncommercial use of Open-Meteo's public API.
+The continent overview refreshes every three hours; viewport overlays cache for three hours, point forecasts for one hour, and place search for 24 hours. Observations poll every ten minutes. Germany and Turkey’s existing point cache keys are retained. Fresh overviews survive a server restart without an unnecessary refetch. Refreshes share a per-location request budget, limited to 400 location calls/minute and 9,000/day. The budget persists across restarts. This app defaults to personal, noncommercial use of Open-Meteo's public API.
 
 ## Install and offline use
 
@@ -95,14 +98,15 @@ All endpoints are read-only. Weather responses have `data`, `source`, `fetchedAt
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/config` | Tile URL and country metadata, boundaries, models, timezones |
-| `GET /api/health?country=TR` | Process health and selected country feed readiness |
-| `GET /api/overview?country=TR` | Country GeoJSON cells, hourly timestamps, and fog states |
-| `GET /api/observations?country=TR` | Latest relevant observations and field timestamps |
-| `GET /api/forecast?country=TR&lat=39.93&lon=32.86` | Hourly point forecast and solar times |
-| `GET /api/search?country=TR&q=Ankara` | Place search restricted to the selected country |
+| `GET /api/config` | Tile URL and Europe coverage metadata, boundaries, models |
+| `GET /api/health` | Process health and Europe feed readiness |
+| `GET /api/overview` | Europe GeoJSON cells, hourly timestamps, and fog states |
+| `GET /api/overview?bbox=13,52,14,53` | Adaptive viewport overlay; bbox is west,south,east,north |
+| `GET /api/observations` | Fresh European observations and field timestamps |
+| `GET /api/forecast?lat=39.93&lon=32.86` | Automatic point forecast, local timezone, and solar times |
+| `GET /api/search?q=Ankara` | Place search restricted to European coverage |
 
-The optional `country` parameter accepts `DE` or `TR`, case-insensitively, and defaults to `DE` for compatibility. Coordinates must be finite and within the selected country's bundled polygon. Unsupported countries and bad input return 400; unavailable data without a cached fallback returns 503 with a `Retry-After` header. Unknown API endpoints return 404. Offline responses preserve original retrieval timestamps.
+The app no longer sends a country parameter. Point forecasts detect Germany and Turkey from coordinates, choosing their existing model and cache; other European points use ICON Seamless with automatic timezone selection. Coordinates must be finite and within the bundled European land mask. A legacy `country=DE`, `TR`, or `EU` parameter can restrict requests explicitly. Legacy country overview snapshots are retained but only the European overview is warmed in the background. Unsupported area codes and bad input return 400; unavailable data without a cached fallback returns 503 with a `Retry-After` header. Unknown API endpoints return 404. Offline responses preserve original retrieval timestamps.
 
 ## Verify
 
@@ -122,13 +126,14 @@ Tests use Testify table cases and fixture HTTP providers. They cover fog thresho
 | Open Sans Semibold glyphs | MapLibre demo font files, Latin ranges 0–1023 | SIL OFL; `web/fonts/OFL.txt` |
 | Germany boundary | Natural Earth 1:50m admin-0, `nvkelso/natural-earth-vector` GeoJSON | Public domain |
 | Turkey boundary | Natural Earth 1:10m admin-0, `nvkelso/natural-earth-vector` GeoJSON | Public domain |
+| Europe boundary | Union of Natural Earth 1:50m admin-0 European countries, Turkey, Cyprus, and the Caucasus, clipped to the coverage bounds | Public domain |
 
 MapLibre 5 is deliberately used for its single-file browser distribution. Glyphs are local; the style needs no sprites. Some non-Latin place-name glyphs outside the bundled ranges may be unavailable.
 
 - Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright); [vector tile usage policy](https://operations.osmfoundation.org/policies/vector/).
 - Forecasts © DWD via [Open-Meteo](https://open-meteo.com/en/docs/dwd-api), CC BY 4.0; fog classifications are app-derived modifications.
 - Observations © [DWD Open Data](https://opendata.dwd.de/weather/weather_reports/synoptic/germany/geojson/).
-- Turkey airport observations via [NOAA Aviation Weather Center](https://aviationweather.gov/data/api/).
+- European airport observations via [NOAA Aviation Weather Center](https://aviationweather.gov/data/api/).
 - Country boundaries © [Natural Earth](https://www.naturalearthdata.com/about/terms-of-use/).
 
 PWA icons are committed PNG files. Regenerate them, if needed, with `go run tools/icons.go`. When changing cached frontend assets, increment the service worker version in `web/sw.js`.

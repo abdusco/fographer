@@ -92,10 +92,10 @@ func TestCountryRoutes(t *testing.T) {
 		{"Turkish overview", "/api/overview?country=TR", 200, `"spacingDegrees":0.5`},
 		{"Turkish observations", "/api/observations?country=TR", 200, "NOAA Aviation Weather Center"},
 		{"case-insensitive country", "/api/overview?country=tr", 200, "DWD ICON EU"},
-		{"unsupported overview country", "/api/overview?country=FR", 400, "Choose Germany"},
-		{"unsupported search country", "/api/search?country=FR&q=Paris", 400, "Choose Germany"},
-		{"unsupported point country", "/api/forecast?country=FR&lat=48&lon=2", 400, "Choose Germany"},
-		{"unsupported observation country", "/api/observations?country=FR", 400, "Choose Germany"},
+		{"unsupported overview country", "/api/overview?country=FR", 400, "Unsupported coverage area"},
+		{"unsupported search country", "/api/search?country=FR&q=Paris", 400, "Unsupported coverage area"},
+		{"unsupported point country", "/api/forecast?country=FR&lat=48&lon=2", 400, "Unsupported coverage area"},
+		{"unsupported observation country", "/api/observations?country=FR", 400, "Unsupported coverage area"},
 		{"Turkey readiness", "/api/health?country=TR", 200, `"country":"TR"`},
 	}
 	for _, tt := range tests {

@@ -15,6 +15,9 @@ var germanyJSON []byte
 //go:embed datafiles/turkey.geojson
 var turkeyJSON []byte
 
+//go:embed datafiles/europe.geojson
+var europeJSON []byte
+
 type Country struct {
 	Code              string          `json:"code"`
 	Name              string          `json:"name"`
@@ -33,6 +36,7 @@ type Country struct {
 var countries = []Country{
 	{Code: "DE", Name: "Germany", Timezone: "Europe/Berlin", TimeLabel: "Berlin time", Model: "icon_d2", ModelName: "DWD ICON D2", Resolution: "2 km", ObservationSource: "DWD station observations", Spacing: .3, Bounds: [4]float64{5.7, 47.1, 15.3, 55.2}, Center: [2]float64{10.4, 51.1}, Boundary: germanyJSON},
 	{Code: "TR", Name: "Turkey", Timezone: "Europe/Istanbul", TimeLabel: "Istanbul time", Model: "icon_eu", ModelName: "DWD ICON EU", Resolution: "7 km", ObservationSource: "Airport METAR observations via NOAA Aviation Weather Center", Spacing: .5, Bounds: [4]float64{25.5, 35.5, 45, 42.5}, Center: [2]float64{35, 39}, Boundary: turkeyJSON},
+	{Code: "EU", Name: "Europe", Timezone: "auto", TimeLabel: "UTC", Model: "icon_seamless", ModelName: "DWD ICON Seamless", Resolution: "2–11 km, selected automatically", ObservationSource: "DWD stations and airport METAR observations via NOAA Aviation Weather Center", Spacing: 2, Bounds: [4]float64{-25, 34, 60, 82}, Center: [2]float64{15, 53}, Boundary: europeJSON},
 }
 
 func countryByCode(code string) (Country, bool) {
