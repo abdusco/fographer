@@ -19,8 +19,6 @@
     <aside class="sidebar" :class="{'expanded': panelExpanded}">
       <button class="sheet-handle" @click="panelExpanded = !panelExpanded" :aria-expanded="panelExpanded" aria-label="Expand location details"><span></span></button>
       <div class="sidebar-content">
-        <div class="eyebrow"><span class="tiny-line"></span> THE PHOTOGRAPHER'S WEATHER MAP</div>
-        <h1>Follow the fog.</h1><p class="intro">Find misty mornings, quiet valleys,<br>and a reason to get up early.</p>
         <div class="search-box"><span aria-hidden="true">⌕</span><input type="search" placeholder="Find a place in Europe…" aria-label="Search places" x-model="query" @input.debounce.350ms="search()" @keydown.escape="results = []"><span x-show="searching" class="spinner" aria-label="Searching"></span></div>
         <div class="search-results" x-show="results.length" x-cloak><template x-for="place in results" :key="place.latitude + ',' + place.longitude"><button @click="selectSpot(place.latitude, place.longitude, place.name); results = []; query = ''"><strong x-text="place.name"></strong><span x-text="place.region"></span></button></template></div>
         <p class="inline-error" x-show="searchError" x-text="searchError" role="status" x-cloak></p>
@@ -52,10 +50,12 @@
     </aside>
     <section class="map-area" aria-label="Fog map of Europe">
       <div id="map" aria-label="Interactive Europe map"></div>
-      <div class="map-heading"><span class="eyebrow" >EUROPE</span><h2>Find your next morning.</h2><p>Ground & valley fog · next 48 hours</p></div>
+      <div class="map-summary">
+        <div class="map-heading"><span class="eyebrow" >EUROPE</span><h2>Find your next morning.</h2><p>Ground & valley fog · next 48 hours</p></div>
+        <div class="map-status" x-show="overviewMessage" x-cloak><span class="spinner" x-show="!overview"></span><span x-text="overviewMessage"></span></div>
+        <div class="map-alert" x-show="mapError" x-text="mapError" role="status" x-cloak></div>
+      </div>
       <div class="map-controls"><button @click="mode = 'now'; renderMap()" :class="{'active':mode === 'now'}">Now</button><button @click="mode = 'forecast'; renderMap()" :class="{'active':mode === 'forecast'}">Forecast</button></div>
-      <div class="map-alert" x-show="mapError" x-text="mapError" role="status" x-cloak></div>
-      <div class="map-status" x-show="overviewMessage" x-cloak><span class="spinner" x-show="!overview"></span><span x-text="overviewMessage"></span></div>
       <div class="legend"><span class="eyebrow">READ THE MAP</span><label><input type="checkbox" x-model="showModel" @change="renderMap()"> Model estimate / forecast</label><span><i class="legend-dot predicted"></i> Predicted fog</span><span><i class="legend-dot favorable"></i> Favorable conditions</span><label x-show="mode === 'now'"><input type="checkbox" x-model="showStations" @change="renderMap()"> <span x-text="'Station & airport observations'"></span></label><span x-show="mode === 'now'"><i class="legend-dot observed"></i> Reported fog / low visibility</span><small><span x-text="'Overview sampled every ' + (overview?.data.spacingDegrees || 2) + '°.'"></span><br>Click for a local model forecast.</small></div>
       <div class="timeline"><div class="timeline-heading"><div><span class="eyebrow" x-text="mode === 'now' ? 'THE VIEW RIGHT NOW' : 'PLAN YOUR EARLY START'"></span><strong x-text="selectedTimeLabel()"></strong></div><span class="timeline-zone" x-text="timeLabel()"></span></div><input type="range" min="0" :max="Math.max(0, times.length - 1)" step="1" x-model.number="timeIndex" @input="mode = 'forecast'; renderMap()" aria-label="Forecast hour" :disabled="!times.length"><div class="timeline-labels"><button @click="chooseTime(times[0])" x-text="times.length ? clock(times[0]) : 'Now'"></button><span>Hourly forecast</span><button @click="chooseTime(times.at(-1))" x-text="times.length ? dayLabel(times.at(-1)) + ' ' + clock(times.at(-1)) : '+48 h'"></button></div></div>
       <span class="map-corner-note">Good photographs begin with a little uncertainty.</span>
