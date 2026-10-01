@@ -1,0 +1,14 @@
+services:
+  fographer:
+    image: ghcr.io/abdusco/fographer:${FOGRAPHER_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+    volumes:
+      - fographer-data:/data
+
+volumes:
+  fographer-data:

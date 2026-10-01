@@ -41,6 +41,26 @@ docker build -t fographer .
 docker run --rm -p 8080:8080 -v fographer-data:/data fographer
 ```
 
+To run a published image behind Caddy:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+Compose binds to `127.0.0.1:8080` and keeps weather snapshots in a named volume. Set `FOGRAPHER_VERSION=v1.0.0` to pin a release or `PORT=3000` to change the host port. Point Caddy's `reverse_proxy` at that port.
+
+## Release
+
+Push a version tag to run checks, publish AMD64/ARM64 images to `ghcr.io/abdusco/fographer`, and create a GitHub release with generated notes:
+
+```sh
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Images use the exact tag (`:v1.0.0`). Stable tags also update `:latest`; tags containing a hyphen, such as `v1.0.0-rc.1`, create prereleases without updating `:latest`. Publishing uses the built-in `GITHUB_TOKEN`. For anonymous pulls, set the GHCR package visibility to public after its first release.
+
 ## Check
 
 ```sh
